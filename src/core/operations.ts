@@ -1542,6 +1542,11 @@ const query: Operation = {
       description:
         "v0.34: scope search to a single source. Defaults to OperationContext.sourceId (set from CLI --source / GBRAIN_SOURCE / .gbrain-source dotfile). Pass '__all__' to span every source for trusted local callers; for remote callers '__all__' spans only your granted sources.",
     },
+    cache: {
+      type: 'boolean',
+      description:
+        "Enable the semantic query cache for this call. Pass --no-cache on the CLI to force a fresh search when validating source or recency changes.",
+    },
     cross_modal: {
       type: 'string',
       enum: ['text', 'image', 'both', 'auto'],
@@ -1661,7 +1666,12 @@ const query: Operation = {
       until: typeof p.until === 'string' ? p.until : undefined,
       // v0.32.x search-lite: token budget + cache opt-outs.
       tokenBudget: typeof p.token_budget === 'number' ? (p.token_budget as number) : undefined,
-      useCache: typeof p.use_cache === 'boolean' ? (p.use_cache as boolean) : undefined,
+      useCache:
+        typeof p.cache === 'boolean'
+          ? (p.cache as boolean)
+          : typeof p.use_cache === 'boolean'
+            ? (p.use_cache as boolean)
+            : undefined,
       intentWeighting: typeof p.intent_weighting === 'boolean' ? (p.intent_weighting as boolean) : undefined,
       // v0.36 cross-modal routing param.
       crossModal: p.cross_modal as 'text' | 'image' | 'both' | 'auto' | undefined,
