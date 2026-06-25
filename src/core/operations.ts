@@ -3,8 +3,9 @@
  * Each operation defines its schema, handler, and optional CLI hints.
  */
 
-import { lstatSync, realpathSync } from 'fs';
-import { resolve, relative, sep } from 'path';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
+import { join, resolve, relative, sep } from 'path';
+import { safeLoad as yamlSafeLoad } from 'js-yaml';
 import type { BrainEngine } from './engine.ts';
 import { clampSearchLimit } from './engine.ts';
 import type { GBrainConfig } from './config.ts';
@@ -24,6 +25,8 @@ import { getContentFlag } from './quarantine.ts';
 import { bumpLastRetrievedAt } from './last-retrieved.ts';
 import { isSearchMode } from './search/mode.ts';
 import { stampEvidence } from './search/evidence.ts';
+import { DEFAULT_FALLBACK, resolveRecencyDecayMap, type RecencyDecayConfig, type RecencyDecayMap } from './search/recency-decay.ts';
+import { fetchSource } from './sources-load.ts';
 import type { SearchResult } from './types.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
 import * as db from './db.ts';
@@ -423,6 +426,37 @@ export function sourceScopeOpts(ctx: OperationContext): { sourceId?: string; sou
   if (allowed && allowed.length > 0) return { sourceIds: allowed };
   if (ctx.sourceId) return { sourceId: ctx.sourceId };
   return {};
+}
+
+interface QueryRecencyDecayConfig {
+  recencyDecay?: RecencyDecayMap;
+  recencyFallback?: RecencyDecayConfig;
+}
+
+export async function loadQueryRecencyDecayConfig(
+  ctx: OperationContext,
+  scope: { sourceId?: string; sourceIds?: string[] },
+): Promise<QueryRecencyDecayConfig> {
+  let yaml: unknown | undefined;
+
+  // A source repo gbrain.yml can be applied only when the read scope resolves
+  // to one concrete source. Federated/all-source queries may mix unrelated
+  // source trees, so they keep the global/env decay map.
+  if (scope.sourceId && scope.sourceId !== '__all__') {
+    const source = await fetchSource(ctx.engine, scope.sourceId);
+    const repoPath = source?.local_path ?? null;
+    if (repoPath) {
+      const yamlPath = join(repoPath, 'gbrain.yml');
+      if (existsSync(yamlPath)) {
+        yaml = yamlSafeLoad(readFileSync(yamlPath, 'utf-8')) ?? {};
+      }
+    }
+  }
+
+  return {
+    recencyDecay: resolveRecencyDecayMap({ yaml }),
+    recencyFallback: DEFAULT_FALLBACK,
+  };
 }
 
 /**
@@ -1590,6 +1624,8 @@ const query: Operation = {
       throw new Error('query requires either `query` (text) or `image` (base64 bytes).');
     }
 
+    const recencyDecayConfig = await loadQueryRecencyDecayConfig(ctx, querySourceScope);
+
     // v0.25.0 — capture meta side-channel. hybridSearch's return contract
     // stays SearchResult[] (Cathedral II callers depend on that); meta
     // arrives via callback so eval capture can record what actually ran.
@@ -1619,6 +1655,8 @@ const query: Operation = {
       // v0.29.1 — agent-explicit recency + salience. Omitted = heuristic defaults.
       salience: p.salience as 'off' | 'on' | 'strong' | undefined,
       recency: p.recency as 'off' | 'on' | 'strong' | undefined,
+      recencyDecay: recencyDecayConfig.recencyDecay,
+      recencyFallback: recencyDecayConfig.recencyFallback,
       since: typeof p.since === 'string' ? p.since : undefined,
       until: typeof p.until === 'string' ? p.until : undefined,
       // v0.32.x search-lite: token budget + cache opt-outs.
