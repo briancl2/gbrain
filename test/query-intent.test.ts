@@ -85,6 +85,38 @@ describe('classifyQuery — current-state queries → both axes on', () => {
 });
 
 describe('classifyQuery — recency-only patterns (no salience signal)', () => {
+  test('"current owner truth" → recency=on, salience=off', () => {
+    const r = classifyQuery('current owner truth Issue 164 GBrain promotion advisory disposition');
+    expect(r.suggestedRecency).toBe('on');
+    expect(r.suggestedSalience).toBe('off');
+  });
+
+  test('owner-routing language without current/time words → recency=on, salience=off', () => {
+    const r = classifyQuery('GBrain advisory boundary not canonical closure truth BMA GitHub issue PR checks merge owner routing');
+    expect(r.suggestedRecency).toBe('on');
+    expect(r.suggestedSalience).toBe('off');
+  });
+
+  test('GitHub work-truth language without current/time words → recency=on', () => {
+    const r = classifyQuery('Issue 1105 GitHub remains work truth BMA Codex researcher of record');
+    expect(r.suggestedRecency).toBe('on');
+  });
+
+  test('active track and next owner action language → recency=on', () => {
+    const r = classifyQuery('GBrain adoption promotion trial owner routing active track work contract next owner action');
+    expect(r.suggestedRecency).toBe('on');
+  });
+
+  test('core-five owner surfaces language → recency=on', () => {
+    const r = classifyQuery('Issue 164 core five repo-star GBrain advisory boundary BMA repo-auditor repo-optimizer repo-upgrade-advisor repo-agent-core owner surfaces downstream mutation');
+    expect(r.suggestedRecency).toBe('on');
+  });
+
+  test('GitHub native operating model advisory boundary language → recency=on', () => {
+    const r = classifyQuery('GitHub native operating model Issue 164 GBrain advisory boundary GitHub remains canonical BMA Codex judgment layer no controllers queues daemons');
+    expect(r.suggestedRecency).toBe('on');
+  });
+
   test('"latest news on AI" → recency=on, salience=off', () => {
     const r = classifyQuery('latest news on AI');
     expect(r.suggestedRecency).toBe('on');
