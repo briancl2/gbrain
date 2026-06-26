@@ -150,6 +150,19 @@ const RECENCY_ON_PATTERNS = [
   /\b(update|status|progress)\s+(on|with|from)\b/i,
 ];
 
+// Owner-routing / work-truth queries ask "which live surface should steer this
+// decision?" even when they omit words like "current". Treat them as freshness
+// lookups so recent owner-truth cards can outrank older aperture/history cards.
+const OWNER_ROUTING_FRESHNESS_PATTERNS = [
+  /\bowner\s+(truth|routing|route|surfaces?|actions?|decisions?|issues?|contracts?)\b/i,
+  /\bnext\s+owner\s+action\b/i,
+  /\bactive\s+(track|child|owner|campaign|work|route|issue)\b/i,
+  /\bwork\s+(truth|contract|surface)\b/i,
+  /\bgithub\s+(remains\s+)?(work|canonical|closure)(\s+truth)?\b/i,
+  /\bgithub\s+native\s+operating\s+model\b/i,
+  /\badvisory\s+boundary\b/i,
+];
+
 // Per D6: explicit temporal bounds override canonical-wins. "Who is X today"
 // → recency='on' (temporal bound wins). "Who is X" alone → recency='off'.
 const EXPLICIT_TEMPORAL_BOUND_PATTERNS = [
@@ -253,14 +266,17 @@ export function classifyQuery(query: string): QuerySuggestions {
   const hasTemporalBound = matches(EXPLICIT_TEMPORAL_BOUND_PATTERNS, query);
   const hasStrongRecency = matches(STRONG_RECENCY_PATTERNS, query);
   const hasRecencyOn = matches(RECENCY_ON_PATTERNS, query);
+  const hasOwnerRoutingFreshness = matches(OWNER_ROUTING_FRESHNESS_PATTERNS, query);
   const hasSalienceOn = matches(SALIENCE_ON_PATTERNS, query);
 
   // Recency axis
   let suggestedRecency: RecencyMode;
-  if (hasCanonical && !hasTemporalBound) {
-    suggestedRecency = 'off';
-  } else if (hasStrongRecency) {
+  if (hasStrongRecency) {
     suggestedRecency = 'strong';
+  } else if (hasOwnerRoutingFreshness) {
+    suggestedRecency = 'on';
+  } else if (hasCanonical && !hasTemporalBound) {
+    suggestedRecency = 'off';
   } else if (hasRecencyOn) {
     suggestedRecency = 'on';
   } else {
