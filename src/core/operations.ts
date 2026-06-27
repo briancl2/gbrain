@@ -6,7 +6,7 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
 import { join, resolve, relative, sep } from 'path';
 import { safeLoad as yamlSafeLoad } from 'js-yaml';
-import type { BrainEngine } from './engine.ts';
+import type { BrainEngine, FactRow } from './engine.ts';
 import { clampSearchLimit } from './engine.ts';
 import type { GBrainConfig } from './config.ts';
 import type { PageType } from './types.ts';
@@ -4000,6 +4000,65 @@ const extract_facts: Operation = {
   },
 };
 
+const OWNER_TRUTH_SCOPE_RE =
+  /\b(?:github|issue\s*#?\d+|#\d+|pull\s+request|pr\s*#?\d+|owner\s+(?:truth|routing|route|action)|active\s+(?:track|child|route|issue)|work\s+truth|campaign\s+sync|operator\s+review|wave\s+[a-z0-9])\b/i;
+const CURRENT_TRUTH_RE =
+  /\b(?:current|live|active|latest|fresh|accepted|completed|next\s+active\s+track|current\s+owner\s+truth|owner\s+truth|owner\s+action|ready\s+for\s+operator\s+review)\b/i;
+const STRONG_CURRENT_TRUTH_RE = /\bCURRENT\b|\bcurrent\s+(?:wave|issue|child|owner|track|truth)\b/i;
+const STRONG_STALE_TRUTH_RE = /\bSTALE\b/;
+const STALE_TRUTH_RE =
+  /\bstale\s+(?:comparator|issue|body|comment|memory|artifact|evidence|owner|truth|track|route|language|material)\b|\b(?:superseded|obsolete|outdated|historical)\b|\bno\s+longer\s+(?:active|current|valid)\b|\bnot\s+(?:the\s+)?current\b|\bshould\s+not\s+be\s+treated\s+as\s+current\b/i;
+
+function factOwnerTruthText(row: FactRow): string {
+  return [
+    row.entity_slug,
+    row.fact,
+    row.context,
+    row.source,
+    row.source_session,
+  ].filter((v): v is string => typeof v === 'string' && v.length > 0).join('\n');
+}
+
+function dateMs(d: Date | string | null | undefined): number {
+  if (!d) return 0;
+  const n = d instanceof Date ? d.getTime() : Date.parse(d);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function ownerTruthCurrentnessScore(row: FactRow): number {
+  const text = factOwnerTruthText(row);
+  if (!OWNER_TRUTH_SCOPE_RE.test(text)) return 0;
+
+  let score = 0;
+  if (STRONG_STALE_TRUTH_RE.test(text)) score -= 80;
+  if (STALE_TRUTH_RE.test(text)) score -= 60;
+  if (CURRENT_TRUTH_RE.test(text)) score += 20;
+  if (STRONG_CURRENT_TRUTH_RE.test(text)) score += 30;
+  if (row.expired_at) score -= 80;
+  if (row.superseded_by !== null) score -= 80;
+  if (row.valid_until && dateMs(row.valid_until) <= Date.now()) score -= 40;
+  return score;
+}
+
+function orderOwnerTruthFacts(rows: FactRow[]): FactRow[] {
+  if (rows.length < 2) return rows;
+  const scored = rows.map((row, index) => ({
+    row,
+    index,
+    score: ownerTruthCurrentnessScore(row),
+  }));
+  if (!scored.some(x => x.score !== 0)) return rows;
+
+  return scored
+    .sort((a, b) =>
+      (b.score - a.score)
+      || (dateMs(b.row.valid_from) - dateMs(a.row.valid_from))
+      || (b.row.id - a.row.id)
+      || (a.index - b.index),
+    )
+    .map(x => x.row);
+}
+
 const recall: Operation = {
   name: 'recall',
   description:
@@ -4021,7 +4080,8 @@ const recall: Operation = {
   annotations: { title: 'recall (memory read)', readOnlyHint: true },
   handler: async (ctx, p) => {
     const sourceId = ctx.sourceId ?? 'default';
-    const limit = typeof p.limit === 'number' ? p.limit : 50;
+    const limit = typeof p.limit === 'number' && Number.isFinite(p.limit) ? Math.max(1, Math.floor(p.limit)) : 50;
+    const factLookupLimit = limit <= 100 ? Math.min(limit * 4, 100) : limit;
     const includeExpired = p.include_expired === true;
     const grep = typeof p.grep === 'string' ? p.grep.toLowerCase() : null;
 
@@ -4043,13 +4103,13 @@ const recall: Operation = {
       const slug = (await resolveEntitySlug(ctx.engine, sourceId, p.entity)) ?? p.entity;
       rows = await ctx.engine.listFactsByEntity(sourceId, slug, {
         activeOnly: !includeExpired,
-        limit,
+        limit: factLookupLimit,
         visibility,
       });
     } else if (typeof p.session_id === 'string' && p.session_id.length > 0) {
       rows = await ctx.engine.listFactsBySession(sourceId, p.session_id, {
         activeOnly: !includeExpired,
-        limit,
+        limit: factLookupLimit,
         visibility,
       });
     } else if (p.since !== undefined) {
@@ -4057,7 +4117,7 @@ const recall: Operation = {
       if (since) {
         rows = await ctx.engine.listFactsSince(sourceId, since, {
           activeOnly: !includeExpired,
-          limit,
+          limit: factLookupLimit,
           visibility,
         });
       }
@@ -4065,12 +4125,14 @@ const recall: Operation = {
       // No filter: return recent across the source.
       rows = await ctx.engine.listFactsSince(sourceId, new Date(0), {
         activeOnly: !includeExpired,
-        limit,
+        limit: factLookupLimit,
         visibility,
       });
     }
 
     if (grep) rows = rows.filter(r => r.fact.toLowerCase().includes(grep));
+    if (p.supersessions !== true) rows = orderOwnerTruthFacts(rows);
+    if (rows.length > limit) rows = rows.slice(0, limit);
 
     // v0.32: optional pending-consolidation count piggy-backed on the recall
     // response. Single round trip on thin-client; omitted when not requested
