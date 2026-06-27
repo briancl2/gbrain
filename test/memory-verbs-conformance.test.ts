@@ -159,6 +159,73 @@ describe('recall — G1B superset + budget packing', () => {
     const violations = validateAgainstSchema(body, RESPONSE_SCHEMAS.recall);
     expect(violations).toEqual([]);
   });
+
+  it('ranks explicit current owner truth ahead of a later stale comparator', async () => {
+    const entity = 'issue164-wave-f-current-over-stale-canary';
+    await engine.insertFact(
+      {
+        fact: 'CURRENT Wave F #1132 owner truth: run the focused briancl2/gbrain current-over-stale repair before Wave G.',
+        kind: 'belief',
+        entity_slug: entity,
+        visibility: 'world',
+        source: 'GitHub #164 Campaign Sync / child #1132 current owner truth',
+        valid_from: new Date('2026-06-27T19:00:00Z'),
+      },
+      { source_id: 'default' },
+    );
+    await engine.insertFact(
+      {
+        fact: 'STALE comparator from #1105/#1102: older operational envelope language should not be treated as current Wave F #1132 proof.',
+        kind: 'belief',
+        entity_slug: entity,
+        visibility: 'world',
+        source: 'historical GitHub issue #1105 stale comparator',
+        valid_from: new Date('2026-06-27T20:00:00Z'),
+      },
+      { source_id: 'default' },
+    );
+
+    const limited = await callRemote('recall', { entity, limit: 1 });
+    expect(limited.isError).toBe(false);
+    expect(limited.body.total).toBe(1);
+    expect(limited.body.facts[0].fact).toContain('CURRENT Wave F #1132');
+
+    const full = await callRemote('recall', { entity, limit: 2 });
+    expect(full.body.facts.map((f: { fact: string }) => f.fact)).toEqual([
+      expect.stringContaining('CURRENT Wave F #1132'),
+      expect.stringContaining('STALE comparator'),
+    ]);
+  });
+
+  it('keeps ordinary non-owner facts in newest-first order', async () => {
+    const entity = 'ordinary-recall-order';
+    await engine.insertFact(
+      {
+        fact: 'ordinary older coffee preference',
+        kind: 'preference',
+        entity_slug: entity,
+        visibility: 'world',
+        source: 'ordinary memory test',
+        valid_from: new Date('2026-06-27T19:00:00Z'),
+      },
+      { source_id: 'default' },
+    );
+    await engine.insertFact(
+      {
+        fact: 'ordinary newer coffee preference',
+        kind: 'preference',
+        entity_slug: entity,
+        visibility: 'world',
+        source: 'ordinary memory test',
+        valid_from: new Date('2026-06-27T20:00:00Z'),
+      },
+      { source_id: 'default' },
+    );
+
+    const { isError, body } = await callRemote('recall', { entity, limit: 1 });
+    expect(isError).toBe(false);
+    expect(body.facts[0].fact).toBe('ordinary newer coffee preference');
+  });
 });
 
 describe('remember — contract behavior', () => {
