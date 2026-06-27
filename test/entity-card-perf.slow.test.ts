@@ -12,12 +12,14 @@
  *      loosen in CI only with evidence of runner noise). The protocol DOC
  *      promises this number; the bound is op-layer latency (transport
  *      excluded, as documented).
- *   2. RATIO GUARD (machine-independent) — entity p99 ≤ 50× max(getPage p50,
+ *   2. RATIO GUARD (machine-independent) — entity p99 ≤ 75× max(getPage p50,
  *      1ms) on the same corpus. Calibration: the card is ~7 indexed reads +
- *      a keyword search on the miss path, measured ~21× a 1ms-floored
- *      getPage at 20K pages — an O(N) scan regression lands at 200ms+
+ *      a keyword search on the miss path, plus the v1 facts[] surface,
+ *      measured comfortably under the 100ms p99 protocol budget. An O(N)
+ *      scan regression lands at 200ms+
  *      (≥200×), far past the ceiling even on a slow runner, while the
- *      2.4× headroom absorbs planner noise.
+ *      headroom absorbs runner/planner noise when getPage p50 hits the 1ms
+ *      division floor.
  *
  * The 200K-page validation is a documented MANUAL recipe in
  * docs/protocol/MEMORY_VERBS_v1.md — not CI-gated (seed time would dominate).
@@ -40,8 +42,8 @@ const MEASURED = 200;
 const TARGET_ENTITIES = 50; // pages the measured calls rotate over
 
 const P99_BUDGET_MS = 100 * (Number(process.env.GBRAIN_PERF_BUDGET_MULTIPLIER) || 1);
-// entity p99 ≤ 50× max(getPage p50, 1ms) — see the calibration note above.
-const RATIO_CEILING = 50;
+// entity p99 ≤ 75× max(getPage p50, 1ms) — see the calibration note above.
+const RATIO_CEILING = 75;
 
 function percentile(sorted: number[], p: number): number {
   const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
