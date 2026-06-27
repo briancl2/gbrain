@@ -45,6 +45,14 @@ export interface EntityOpenThread {
   date: string | null;
 }
 
+export interface EntityCardFact {
+  fact_id: string;
+  kind: string;
+  fact: string;
+  provenance: string;
+  valid_from: string | null;
+}
+
 export interface EntityCard {
   entity: { slug: string; title: string; type: string | null };
   /** page_aliases reverse lookup (normalized forms). Empty on pre-migration brains. */
@@ -63,6 +71,8 @@ export interface EntityCard {
   backlink_count: number;
   /** Active facts about this entity (capped count; visibility-filtered for remote). */
   active_fact_count: number;
+  /** Active remembered facts, newest first, so fact-only decisions remain entity-readable. */
+  facts: EntityCardFact[];
 }
 
 export interface EntitySuggestion {
@@ -111,7 +121,7 @@ export async function buildEntityCard(
   // raw input — a caller passing an already-namespaced slug
   // ("people/alice-example") must hit exactly (slugify flattens the slash).
   const slug = slugify(trimmed);
-  const exactSlugs = [...new Set([slug, trimmed].filter(Boolean))];
+  const exactSlugs = [...new Set([slug, trimmed, slug ? `people/${slug}` : ''].filter(Boolean))];
 
   // Candidate slugs with their best arm rank.
   const rankBySlug = new Map<string, number>();
@@ -178,6 +188,8 @@ export async function buildEntityCard(
     .sort((a, b) => a.rank - b.rank || lastTouchedMs(b.row) - lastTouchedMs(a.row));
 
   if (candidates.length === 0) {
+    const factBacked = await buildFactBackedCard(engine, sourceId, trimmed, exactSlugs, opts.remote);
+    if (factBacked) return { found: true, card: factBacked };
     return { found: false, suggestions: await nearMissSuggestions(engine, sourceId, trimmed) };
   }
 
@@ -303,6 +315,54 @@ async function assembleCard(
     edges,
     backlink_count: backlinkCount,
     active_fact_count: facts.length,
+    facts: facts.slice(0, 10).map(factToCardFact),
+  };
+}
+
+async function buildFactBackedCard(
+  engine: BrainEngine,
+  sourceId: string,
+  name: string,
+  entitySlugs: string[],
+  remote: boolean,
+): Promise<EntityCard | null> {
+  const visibility = remote ? (['world'] as ('private' | 'world')[]) : undefined;
+  const seen = new Set<number>();
+  const facts: FactRow[] = [];
+  for (const entitySlug of entitySlugs) {
+    const rows = await engine.listFactsByEntity(sourceId, entitySlug, {
+      activeOnly: true,
+      limit: FACT_FETCH_CAP,
+      ...(visibility ? { visibility } : {}),
+    }).catch(() => [] as FactRow[]);
+    for (const row of rows) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      facts.push(row);
+    }
+  }
+  facts.sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
+  if (facts.length === 0) return null;
+
+  const entitySlug = facts[0].entity_slug ?? entitySlugs[0] ?? name;
+  const summaryFacts = facts.slice(0, 3).map(f => `- ${f.fact}`).join('\n');
+  return {
+    entity: { slug: entitySlug, title: titleFromEntitySlug(entitySlug), type: 'fact-backed' },
+    aka: [],
+    summary: summaryFacts,
+    last_touched: {
+      updated_at: facts[0].created_at.toISOString(),
+      last_retrieved_at: null,
+      last_timeline_date: null,
+    },
+    open_threads: facts
+      .filter(f => f.kind === 'commitment')
+      .slice(0, OPEN_THREADS_CAP)
+      .map(f => ({ kind: 'commitment', text: f.fact, date: f.valid_from?.toISOString() ?? null })),
+    edges: [],
+    backlink_count: 0,
+    active_fact_count: facts.length,
+    facts: facts.slice(0, 10).map(factToCardFact),
   };
 }
 
@@ -345,4 +405,23 @@ function toMs(v: Date | string | null): number {
 function toIso(v: Date | string | null): string | null {
   const ms = toMs(v);
   return ms > 0 ? new Date(ms).toISOString() : null;
+}
+
+function factToCardFact(f: FactRow): EntityCardFact {
+  return {
+    fact_id: String(f.id),
+    kind: f.kind,
+    fact: f.fact,
+    provenance: f.source,
+    valid_from: f.valid_from?.toISOString() ?? null,
+  };
+}
+
+function titleFromEntitySlug(slug: string): string {
+  const leaf = slug.includes('/') ? slug.split('/').filter(Boolean).at(-1) ?? slug : slug;
+  return leaf
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, ch => ch.toUpperCase()) || slug;
 }

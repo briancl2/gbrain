@@ -206,6 +206,29 @@ describe('remember — contract behavior', () => {
     expect(texts).toContain('world-visible round-trip fact');
     expect(texts).not.toContain('PRIVATE-SENTINEL');
   });
+
+  it('no-embedding exact repeats return duplicate instead of silently inserting another row', async () => {
+    const first = await callRemote('remember', {
+      fact: 'Duplicate fallback fact with no embedding provider',
+      provenance: 'test',
+      entity: 'people/no-embedding-duplicate',
+    });
+    expect(first.isError).toBe(false);
+    expect(first.body.status).toBe('inserted');
+    expect(first.body.degraded_dedup).toBe(true);
+
+    const second = await callRemote('remember', {
+      fact: 'Duplicate fallback fact with no embedding provider',
+      provenance: 'test',
+      entity: 'people/no-embedding-duplicate',
+    });
+    expect(second.isError).toBe(false);
+    expect(second.body.status).toBe('duplicate');
+    expect(second.body.id).toBe(first.body.id);
+
+    const recalled = await callRemote('recall', { entity: 'people/no-embedding-duplicate' });
+    expect(recalled.body.total).toBe(1);
+  });
 });
 
 describe('entity — card, arms, zero LLM', () => {
@@ -284,6 +307,24 @@ describe('entity — card, arms, zero LLM', () => {
     expect(body.found).toBe(true);
     expect(JSON.stringify(body.card.open_threads)).not.toContain('PRIVATE-SENTINEL');
   });
+
+  it('materializes remembered decisions as fact-backed entity cards when no page exists', async () => {
+    await callRemote('remember', {
+      fact: 'Decision: current GitHub issue, PR, check, and merge truth outranks stale issue body, stale comments, stale memory, and stale retained evidence.',
+      provenance: 'BMA #1131 compact wave',
+      entity: 'bma/issue164/current-owner-truth',
+      kind: 'belief',
+    });
+
+    const { isError, body } = await callRemote('entity', { name: 'bma/issue164/current-owner-truth' });
+    expect(isError).toBe(false);
+    expect(body.found).toBe(true);
+    expect(body.card.entity.slug).toBe('bma-issue164-current-owner-truth');
+    expect(body.card.entity.type).toBe('fact-backed');
+    expect(body.card.facts[0].fact).toContain('Decision: current GitHub');
+    expect(body.card.facts[0].provenance).toBe('BMA #1131 compact wave');
+    expect(validateAgainstSchema(body, RESPONSE_SCHEMAS.entity)).toEqual([]);
+  });
 });
 
 describe('synthesize — marked expensive + unavailable conversion [c10]', () => {
@@ -321,6 +362,32 @@ describe('synthesize — marked expensive + unavailable conversion [c10]', () =>
     expect(Array.isArray(body.sources)).toBe(true);
     const violations = validateAgainstSchema(body, RESPONSE_SCHEMAS.synthesize);
     expect(violations).toEqual([]);
+  });
+
+  it('without a chat key returns deterministic cited evidence or a bounded no-evidence response', async () => {
+    await callRemote('remember', {
+      fact: 'No-key synthesize fallback should cite this remembered fact.',
+      provenance: 'deterministic fallback test',
+      entity: 'people/no-key-synthesis',
+    });
+    const { isError, body } = await callRemote('synthesize', {
+      question: 'What evidence exists for no-key synthesize fallback?',
+    });
+    expect(isError).toBe(false);
+    expect(body.answer).toContain('No chat model is configured');
+    expect(body.answer).toContain('No-key synthesize fallback should cite this remembered fact.');
+    expect(body.sources.some((s: string) => s.startsWith('fact:'))).toBe(true);
+    expect(body.cost.model).toBe('deterministic-no-key-fallback');
+    expect(validateAgainstSchema(body, RESPONSE_SCHEMAS.synthesize)).toEqual([]);
+
+    await resetPgliteState(engine);
+    const empty = await callRemote('synthesize', {
+      question: 'No evidence should match this bounded empty request qzx-no-evidence',
+    });
+    expect(empty.isError).toBe(false);
+    expect(empty.body.answer).toContain('no local evidence matched');
+    expect(empty.body.sources).toEqual([]);
+    expect(empty.body.gaps).toContain('No matching local facts or pages were found.');
   });
 });
 

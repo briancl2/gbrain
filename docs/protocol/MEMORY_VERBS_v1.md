@@ -128,7 +128,8 @@ Save ONE fact with mandatory attribution.
 
 Response: `{ id, status, status_text, entity_slug, valid_until,
 protocol_version }` (+ `degraded_dedup: true` when no embedding provider —
-near-duplicates may insert; dedup and supersession ride embedding similarity).
+near-duplicates may insert; exact repeats still return `duplicate`, while
+semantic dedup and supersession ride embedding similarity).
 
 - `id` — opaque STRING (gbrain serializes integers; another implementation may
   use UUIDs). On `status: "duplicate"` it is the EXISTING fact's id.
@@ -148,13 +149,20 @@ break on most-recently-touched. Multi-hit ⇒ best match's card + runners-up in
 `suggestions`. Miss ⇒ `found: false` + keyword near-misses with
 `create_safety` hints.
 
+When no page exists but active facts exist for the requested entity slug,
+`entity` returns a fact-backed card so remembered decisions remain readable
+through the entity verb.
+
 Response: `{ protocol_version, found, latency_ms, card?, suggestions? }`.
 Card: `{ entity{slug,title,type}, aka[], summary, last_touched{updated_at,
 last_retrieved_at, last_timeline_date}, open_threads[], edges[],
-backlink_count, active_fact_count }`.
+backlink_count, active_fact_count, facts[] }`.
 
 - `summary` passes the same privacy fences as `get_page` (takes + private
   facts stripped); remote callers never see private facts in the card.
+- `facts[]` carries active remembered facts newest-first as
+  `{ fact_id, kind, fact, provenance, valid_from }`; empty when there are no
+  visible facts.
 - `open_threads` (best-effort in v1): active commitment-kind facts + timeline
   entries from the last 90 days, capped at 3.
 - `edges`: top ~10 typed edges, mentions excluded, out-edges first.
@@ -174,8 +182,9 @@ output_tokens, usd_estimate}, protocol_version }`.
 - The `cost` block is a BEST-EFFORT AGGREGATE (retries/multi-call flows sum;
   cache hits may undercount; token fields are `null` when a provider returns
   no accounting). Honest signal, not an invoice.
-- No LLM configured ⇒ the protocol error `unavailable` with a fix — never a
-  fake answer.
+- No LLM configured ⇒ deterministic fallback: cited local evidence lines when
+  facts/pages match, otherwise a bounded no-evidence response. `cost.model`
+  is `deterministic-no-key-fallback`; token and USD fields are `null`.
 
 ### forget(id, reason?) — write
 
@@ -225,8 +234,8 @@ cards; idempotent forget), and ROUND-TRIP (remember → recall by entity — a
 plain indexed read, deterministic). It does NOT judge ranking quality.
 Entity-card cases need a seedable page (`put_page`); against verbs-only
 targets they skip honestly. `--synthesize` is cost-gated: with no LLM key it
-asserts the clean `unavailable` error (what CI does); with a key it spends
-real tokens. The fixture set ships as data
+asserts deterministic fallback behavior; with a key it spends real tokens.
+The fixture set ships as data
 (`test/fixtures/memory-verbs/cases.json`) and seeds BrainBench's
 protocol-compliance arm. gbrain's CI certifies its own stdio + HTTP
 transports; external certification is best-effort tooling until a second

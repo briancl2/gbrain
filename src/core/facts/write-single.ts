@@ -27,6 +27,7 @@ import type { BrainEngine, FactInsertStatus, NewFact } from '../engine.ts';
 
 const DEDUP_THRESHOLD = 0.95;
 const DEDUP_CANDIDATE_LIMIT = 5;
+const EXACT_DEDUP_SCAN_LIMIT = 100;
 
 export interface SingleFactInput {
   fact: string;
@@ -69,6 +70,26 @@ export async function writeSingleFact(
   const resolvedSlug = input.entity
     ? ((await resolveEntitySlug(engine, sourceId, input.entity)) ?? input.entity)
     : null;
+
+  // Always run a cheap exact-text guard when an entity is known. This keeps
+  // no/low-embedding writes idempotent for exact repeats instead of silently
+  // duplicating rows just because semantic dedup is unavailable.
+  if (resolvedSlug) {
+    const existing = await engine.listFactsByEntity(sourceId, resolvedSlug, {
+      activeOnly: true,
+      limit: EXACT_DEDUP_SCAN_LIMIT,
+    });
+    const exact = existing.find(c => collapse(c.fact) === collapse(factText) && c.kind === kind);
+    if (exact) {
+      return {
+        id: exact.id,
+        status: 'duplicate',
+        entity_slug: resolvedSlug,
+        valid_until: exact.valid_until ?? null,
+        degraded_dedup: false,
+      };
+    }
+  }
 
   // Embedding (NOT an LLM call): powers dedup + downstream recall. Fail-soft —
   // a missing/failing provider degrades dedup, never the write.

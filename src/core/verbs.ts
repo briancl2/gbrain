@@ -23,7 +23,8 @@
  * evaluates second.
  */
 
-import type { Operation } from './operations.ts';
+import type { Operation, OperationContext } from './operations.ts';
+import { isAvailable } from './ai/gateway.ts';
 
 /** Frozen protocol version for the MEMORY_VERBS v1 verb set. Single source of truth. */
 export const MEMORY_VERBS_VERSION = 1;
@@ -232,6 +233,9 @@ const synthesize: Operation = {
         'Pass the question to synthesize an answer for, e.g. question: "what is our payments strategy?".',
       );
     }
+    if (!isAvailable('chat')) {
+      return deterministicSynthesisFallback(ctx, question);
+    }
     const scope = sourceScopeOpts(ctx);
     const { runThink } = await import('./think/index.ts');
     // Remote-safe delegation: save/take are NEVER offered through this verb,
@@ -250,12 +254,7 @@ const synthesize: Operation = {
     // contract converts that state into an explicit `unavailable` error so
     // agents branch on configure/retry instead of relaying a fake answer.
     if (result.warnings.includes('NO_ANTHROPIC_API_KEY')) {
-      throw verbError(
-        'unavailable',
-        'synthesize needs an LLM and none is configured.',
-        'Set an API key (e.g. `gbrain config set anthropic_api_key sk-...` or ANTHROPIC_API_KEY) and retry. recall and entity work without one.',
-        'chat gateway unconfigured (NO_ANTHROPIC_API_KEY)',
-      );
+      return deterministicSynthesisFallback(ctx, question);
     }
 
     // Best-effort cost block [E5/m3]: actual tokens when the gateway reported
@@ -283,6 +282,53 @@ const synthesize: Operation = {
   },
   cliHints: { name: 'synthesize', positional: ['question'] },
 };
+
+async function deterministicSynthesisFallback(ctx: OperationContext, question: string) {
+  const { sourceScopeOpts } = await import('./operations.ts');
+  const scope = sourceScopeOpts(ctx);
+  const sourceIds = scope.sourceIds ?? [scope.sourceId ?? ctx.sourceId ?? 'default'];
+  const visibility = ctx.remote === false ? undefined : (['world'] as ('private' | 'world')[]);
+
+  const factRows = (
+    await Promise.all(sourceIds.map(sourceId =>
+      ctx.engine.listFactsSince(sourceId, new Date(0), {
+        activeOnly: true,
+        limit: 5,
+        ...(visibility ? { visibility } : {}),
+      }).catch(() => []),
+    ))
+  ).flat().sort((a, b) => b.created_at.getTime() - a.created_at.getTime()).slice(0, 5);
+
+  const pageRows = await ctx.engine.searchKeyword(question, { limit: 5, ...scope }).catch(() => []);
+  const evidenceLines = [
+    ...factRows.map(f => `- [fact:${f.id}] ${f.fact} (provenance: ${f.source})`),
+    ...pageRows.map(r => `- [${r.slug}] ${r.title ?? r.slug}${r.chunk_text ? `: ${r.chunk_text}` : ''}`),
+  ];
+  const sources = [
+    ...factRows.map(f => `fact:${f.id}`),
+    ...pageRows.map(r => r.slug),
+  ];
+
+  return {
+    answer: evidenceLines.length
+      ? [
+          'No chat model is configured; returning deterministic local evidence instead of LLM synthesis.',
+          ...evidenceLines,
+        ].join('\n')
+      : 'No chat model is configured and no local evidence matched the synthesis request.',
+    sources,
+    gaps: evidenceLines.length
+      ? ['LLM synthesis unavailable; answer is an extractive evidence summary only.']
+      : ['LLM synthesis unavailable.', 'No matching local facts or pages were found.'],
+    cost: {
+      model: 'deterministic-no-key-fallback',
+      input_tokens: null,
+      output_tokens: null,
+      usd_estimate: null,
+    },
+    protocol_version: MEMORY_VERBS_VERSION,
+  };
+}
 
 // ─── forget ──────────────────────────────────────────────────────────────────
 
@@ -428,7 +474,7 @@ export const RESPONSE_SCHEMAS: Record<VerbName, Record<string, unknown>> = {
       status_text: { type: 'string', description: 'Human rendering of status. Display only — never branch on it.' },
       entity_slug: { type: ['string', 'null'] },
       valid_until: { type: ['string', 'null'], description: 'ISO 8601 or null (never expires).' },
-      degraded_dedup: { type: 'boolean', description: 'Present (true) when no embedding provider — near-duplicates may insert.' },
+      degraded_dedup: { type: 'boolean', description: 'Present (true) when no embedding provider — exact repeats still duplicate-detect; near-duplicates may insert.' },
     },
   },
   entity: {
@@ -440,7 +486,7 @@ export const RESPONSE_SCHEMAS: Record<VerbName, Record<string, unknown>> = {
       latency_ms: { type: 'integer' },
       card: {
         type: 'object',
-        required: ['entity', 'aka', 'summary', 'last_touched', 'open_threads', 'edges', 'backlink_count', 'active_fact_count'],
+        required: ['entity', 'aka', 'summary', 'last_touched', 'open_threads', 'edges', 'backlink_count', 'active_fact_count', 'facts'],
         properties: {
           entity: {
             type: 'object',
@@ -485,6 +531,20 @@ export const RESPONSE_SCHEMAS: Record<VerbName, Record<string, unknown>> = {
           },
           backlink_count: { type: 'integer' },
           active_fact_count: { type: 'integer' },
+          facts: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['fact_id', 'kind', 'fact', 'provenance', 'valid_from'],
+              properties: {
+                fact_id: { type: 'string' },
+                kind: { type: 'string', enum: FACT_KINDS as unknown as string[] },
+                fact: { type: 'string' },
+                provenance: { type: 'string' },
+                valid_from: { type: ['string', 'null'] },
+              },
+            },
+          },
         },
       },
       suggestions: {
