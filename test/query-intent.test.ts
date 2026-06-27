@@ -164,6 +164,11 @@ describe('classifyQuery — D6 narrow temporal-bound exception', () => {
     const r = classifyQuery("what is widget-co's status this week");
     expect(r.suggestedRecency).toBe('on');
   });
+
+  test('"what is widget-co\'s current status" → recency=on (current-state bound wins)', () => {
+    const r = classifyQuery("what is widget-co's current status");
+    expect(r.suggestedRecency).toBe('on');
+  });
 });
 
 describe('classifyQuery — orthogonality of axes', () => {

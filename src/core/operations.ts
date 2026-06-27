@@ -3,8 +3,9 @@
  * Each operation defines its schema, handler, and optional CLI hints.
  */
 
-import { lstatSync, realpathSync } from 'fs';
-import { resolve, relative, sep } from 'path';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
+import { join, resolve, relative, sep } from 'path';
+import { safeLoad as yamlSafeLoad } from 'js-yaml';
 import type { BrainEngine } from './engine.ts';
 import { clampSearchLimit } from './engine.ts';
 import type { GBrainConfig } from './config.ts';
@@ -24,6 +25,12 @@ import { getContentFlag } from './quarantine.ts';
 import { bumpLastRetrievedAt } from './last-retrieved.ts';
 import { isSearchMode } from './search/mode.ts';
 import { stampEvidence } from './search/evidence.ts';
+import { packToBudget, estimateTokens, resultTokens } from './search/token-budget.ts';
+import { isAvailable } from './ai/gateway.ts';
+import { verbOperations, MEMORY_VERBS_VERSION } from './verbs.ts';
+export { MEMORY_VERBS_VERSION };
+import { DEFAULT_FALLBACK, resolveRecencyDecayMap, type RecencyDecayConfig, type RecencyDecayMap } from './search/recency-decay.ts';
+import { fetchSource } from './sources-load.ts';
 import type { SearchResult } from './types.ts';
 import { CJK_SLUG_CHARS } from './cjk.ts';
 import * as db from './db.ts';
@@ -69,10 +76,27 @@ export type ErrorCode =
   | 'rate_limited'      // v0.31: gateway rate-limit upstream
   | 'extraction_failed' // v0.31: facts extractor failed (refusal, parse, abort)
   | 'fact_not_found'    // v0.31: forget_fact / recall on unknown id
+  // MEMORY_VERBS v1 protocol codes (frozen — docs/protocol/MEMORY_VERBS_v1.md).
+  // Coarse on purpose: codes are for branching (configure/retry vs caller bug
+  // vs server bug); the freeform `detail` field carries specifics.
+  | 'not_found'            // verb-level: unknown fact id (forget)
+  | 'scope_denied'         // verb-level: OAuth scope / trust-boundary refusal
+  | 'provenance_required'  // remember: provenance missing or empty
+  | 'unavailable'          // a required dependency cannot serve (no API key, gateway down, model refusal)
+  | 'budget_unsatisfiable' // RESERVED in v1 — schema-listed, never returned
   // eslint-disable-next-line @typescript-eslint/ban-types
   | (string & {});      // OPEN union for forward-compat (eE7 / D13)
 
 export class OperationError extends Error {
+  /**
+   * MEMORY_VERBS v1: verb handlers set `protocolVersion` (=1) and may set
+   * `detail` (freeform specifics, e.g. which dependency failed). Both are
+   * additive — non-verb ops never set them and their envelopes are unchanged
+   * (undefined keys drop out of JSON.stringify).
+   */
+  public detail?: string;
+  public protocolVersion?: number;
+
   constructor(
     public code: ErrorCode,
     message: string,
@@ -89,8 +113,27 @@ export class OperationError extends Error {
       message: this.message,
       suggestion: this.suggestion,
       docs: this.docs,
+      detail: this.detail,
+      protocol_version: this.protocolVersion,
     };
   }
+}
+
+/**
+ * MEMORY_VERBS v1 error constructor. Every verb error carries a populated
+ * `suggestion` (problem + cause + fix — agents read it and self-correct;
+ * conformance asserts non-empty) and `protocol_version: 1`.
+ */
+export function verbError(
+  code: ErrorCode,
+  message: string,
+  suggestion: string,
+  detail?: string,
+): OperationError {
+  const e = new OperationError(code, message, suggestion);
+  e.protocolVersion = MEMORY_VERBS_VERSION;
+  if (detail !== undefined) e.detail = detail;
+  return e;
 }
 
 // --- Upload validators (Fix 1 / B5 / H5 / M4) ---
@@ -425,6 +468,37 @@ export function sourceScopeOpts(ctx: OperationContext): { sourceId?: string; sou
   return {};
 }
 
+interface QueryRecencyDecayConfig {
+  recencyDecay?: RecencyDecayMap;
+  recencyFallback?: RecencyDecayConfig;
+}
+
+export async function loadQueryRecencyDecayConfig(
+  ctx: OperationContext,
+  scope: { sourceId?: string; sourceIds?: string[] },
+): Promise<QueryRecencyDecayConfig> {
+  let yaml: unknown | undefined;
+
+  // A source repo gbrain.yml can be applied only when the read scope resolves
+  // to one concrete source. Federated/all-source queries may mix unrelated
+  // source trees, so they keep the global/env decay map.
+  if (scope.sourceId && scope.sourceId !== '__all__') {
+    const source = await fetchSource(ctx.engine, scope.sourceId);
+    const repoPath = source?.local_path ?? null;
+    if (repoPath) {
+      const yamlPath = join(repoPath, 'gbrain.yml');
+      if (existsSync(yamlPath)) {
+        yaml = yamlSafeLoad(readFileSync(yamlPath, 'utf-8')) ?? {};
+      }
+    }
+  }
+
+  return {
+    recencyDecay: resolveRecencyDecayMap({ yaml }),
+    recencyFallback: DEFAULT_FALLBACK,
+  };
+}
+
 /**
  * #2200: source scope for the LINK read ops (get_links / get_backlinks). A link
  * row references three pages (from, to, origin); the engine's federated
@@ -604,6 +678,22 @@ export interface Operation {
    */
   scope?: 'read' | 'write' | 'admin' | 'sources_admin' | 'users_admin';
   localOnly?: boolean;
+  /**
+   * MEMORY_VERBS v1: marks the five frozen protocol verbs (recall, remember,
+   * entity, synthesize, forget). `gbrain serve --surface verbs` exposes
+   * EXACTLY the ops with `verb: true`; `full` (default) exposes everything.
+   */
+  verb?: boolean;
+  /**
+   * MCP ToolAnnotations passthrough (SDK 1.29+). Emitted by buildToolDefs
+   * ONLY when set — existing tools keep byte-identical definitions.
+   */
+  annotations?: {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+  };
   cliHints?: {
     name?: string;
     /**
@@ -1429,11 +1519,14 @@ const search: Operation = {
     // Cheap-hybrid (D4/D15): full vector+keyword+RRF+pool+title+alias, but
     // expansion OFF (no per-call LLM cost). `query` op is the full-control variant.
     let capturedMeta: HybridSearchMeta | null = null;
+    const recencyDecayConfig = await loadQueryRecencyDecayConfig(ctx, scope);
     const results = await hybridSearchCached(ctx.engine, queryText, {
       limit,
       offset,
       expansion: false,
       ...scope,
+      recencyDecay: recencyDecayConfig.recencyDecay,
+      recencyFallback: recencyDecayConfig.recencyFallback,
       ...(perCallMode ? { mode: perCallMode } : {}),
       onMeta: (m) => { capturedMeta = m; },
     });
@@ -1507,6 +1600,11 @@ const query: Operation = {
       type: 'string',
       description:
         "v0.34: scope search to a single source. Defaults to OperationContext.sourceId (set from CLI --source / GBRAIN_SOURCE / .gbrain-source dotfile). Pass '__all__' to span every source for trusted local callers; for remote callers '__all__' spans only your granted sources.",
+    },
+    cache: {
+      type: 'boolean',
+      description:
+        "Enable the semantic query cache for this call. Pass --no-cache on the CLI to force a fresh search when validating source or recency changes.",
     },
     cross_modal: {
       type: 'string',
@@ -1590,6 +1688,8 @@ const query: Operation = {
       throw new Error('query requires either `query` (text) or `image` (base64 bytes).');
     }
 
+    const recencyDecayConfig = await loadQueryRecencyDecayConfig(ctx, querySourceScope);
+
     // v0.25.0 — capture meta side-channel. hybridSearch's return contract
     // stays SearchResult[] (Cathedral II callers depend on that); meta
     // arrives via callback so eval capture can record what actually ran.
@@ -1619,11 +1719,18 @@ const query: Operation = {
       // v0.29.1 — agent-explicit recency + salience. Omitted = heuristic defaults.
       salience: p.salience as 'off' | 'on' | 'strong' | undefined,
       recency: p.recency as 'off' | 'on' | 'strong' | undefined,
+      recencyDecay: recencyDecayConfig.recencyDecay,
+      recencyFallback: recencyDecayConfig.recencyFallback,
       since: typeof p.since === 'string' ? p.since : undefined,
       until: typeof p.until === 'string' ? p.until : undefined,
       // v0.32.x search-lite: token budget + cache opt-outs.
       tokenBudget: typeof p.token_budget === 'number' ? (p.token_budget as number) : undefined,
-      useCache: typeof p.use_cache === 'boolean' ? (p.use_cache as boolean) : undefined,
+      useCache:
+        typeof p.cache === 'boolean'
+          ? (p.cache as boolean)
+          : typeof p.use_cache === 'boolean'
+            ? (p.use_cache as boolean)
+            : undefined,
       intentWeighting: typeof p.intent_weighting === 'boolean' ? (p.intent_weighting as boolean) : undefined,
       // v0.36 cross-modal routing param.
       crossModal: p.cross_modal as 'text' | 'image' | 'both' | 'auto' | undefined,
@@ -3840,7 +3947,7 @@ const sources_status: Operation = {
 const extract_facts: Operation = {
   name: 'extract_facts',
   description:
-    'v0.31: extract personal-knowledge facts (events, preferences, commitments, beliefs) from a conversation turn into the per-source hot memory. Sanitizes turn_text via INJECTION_PATTERNS, calls Haiku to extract structured claims, runs the cosine fast-path + classifier dedup pipeline, INSERTs into facts. Returns counts by status. Skips extraction when the turn is dream-generated content (anti-loop).',
+    'v0.31: extract personal-knowledge facts (events, preferences, commitments, beliefs) from a conversation turn into the per-source hot memory. Sanitizes turn_text via INJECTION_PATTERNS, calls Haiku to extract structured claims, runs the cosine fast-path + classifier dedup pipeline, INSERTs into facts. Returns counts by status. Skips extraction when the turn is dream-generated content (anti-loop). For agent memory writes of a SINGLE already-formed fact, prefer the `remember` verb (zero LLM, mandatory provenance).',
   params: {
     turn_text: { type: 'string', required: true, description: 'The user message or page body to extract facts from. Sanitized via INJECTION_PATTERNS before the LLM call.' },
     session_id: { type: 'string', description: 'Opaque session id (e.g. topic-id from MCP _meta.session_id, or CLI --session). Stored on each fact for the recall --session filter. Not an auth surface.' },
@@ -3896,18 +4003,22 @@ const extract_facts: Operation = {
 const recall: Operation = {
   name: 'recall',
   description:
-    'v0.31: query per-source hot memory (facts table). Filters by entity / since / session. Remote callers see only visibility=world facts. Returns most-recent first. v0.32 adds optional include_pending to return pending_consolidation_count alongside facts in one round trip.',
+    'MEMORY VERB (v1): retrieve saved facts/snippets — the protocol read verb. Filters hot-memory facts by entity / since / session_id; pass `query` to ALSO run hybrid search over pages (results[] arm); pass `budget_tokens` for server-side packing (response reports budget_used + dropped_count — never trims client-side). Remote callers see visibility=world facts only. Routing: for ONE known person/company/project card use `entity` (zero LLM); for broad questions needing reasoning use `synthesize` (expensive). Branch on structured fields (status/kind/evidence), never on prose. Every response carries protocol_version.',
   params: {
     entity: { type: 'string', description: 'Entity slug (canonical). Returns facts about this entity newest first.' },
-    since: { type: 'string', description: 'ISO datetime or duration shorthand (e.g. "8 hours ago"). Returns facts created since.' },
+    query: { type: 'string', description: 'MEMORY_VERBS v1: free-text retrieval over pages (hybrid search arm). Response adds results[] (slug, title, chunk, evidence, create_safety, provenance). Combinable with entity (both arms run). Degrades to keyword-only search when no embedding provider is configured (search_degraded notes it; never an error).' },
+    budget_tokens: { type: 'number', description: 'MEMORY_VERBS v1: server-side token budget (char/4 estimate). Facts pack first, then results. Response adds budget_tokens, budget_used, dropped_count.' },
+    since: { type: 'string', description: 'ISO 8601 datetime or duration shorthand (e.g. "8 hours ago"). Filters the FACTS arm only.' },
     session_id: { type: 'string', description: 'Source session id (e.g. topic-A). Returns facts captured in that session.' },
     include_expired: { type: 'boolean', description: 'When true, include expired_at IS NOT NULL rows. Default false.' },
     supersessions: { type: 'boolean', description: 'When true, return only the supersession audit log (expired_at + superseded_by both set).' },
-    limit: { type: 'number', description: 'Max rows to return. Default 50, cap 100.' },
+    limit: { type: 'number', description: 'Per-arm cap: max fact rows AND max search results. Default 50, cap 100.' },
     grep: { type: 'string', description: 'Substring filter on fact text (case-insensitive). Applied client-side after recall.' },
     include_pending: { type: 'boolean', description: 'v0.32: when true, response includes pending_consolidation_count (facts not yet promoted to takes by the dream-cycle consolidate phase). One round trip; backward-compatible (field omitted when false).' },
   },
   scope: 'read',
+  verb: true,
+  annotations: { title: 'recall (memory read)', readOnlyHint: true },
   handler: async (ctx, p) => {
     const sourceId = ctx.sourceId ?? 'default';
     const limit = typeof p.limit === 'number' ? p.limit : 50;
@@ -3978,8 +4089,58 @@ const recall: Operation = {
       }
     }
 
+    // ── MEMORY_VERBS v1 — query arm (G1B superset). Hybrid search over pages
+    // when `query` is present; degrades to keyword-only with a note (never an
+    // error) when no embedding provider is configured [F-B].
+    const queryText = typeof p.query === 'string' && p.query.trim().length > 0 ? p.query.trim() : null;
+    const budgetTokens =
+      typeof p.budget_tokens === 'number' && Number.isFinite(p.budget_tokens) && p.budget_tokens > 0
+        ? Math.floor(p.budget_tokens)
+        : null;
+
+    let searchResults: SearchResult[] = [];
+    let searchDegraded: string | undefined;
+    if (queryText) {
+      const searchScope = sourceScopeOpts(ctx);
+      if (!isAvailable('embedding')) {
+        const raw = await ctx.engine.searchKeyword(queryText, { limit, ...searchScope });
+        searchResults = dedupResults(raw);
+        stampEvidenceSafe(searchResults);
+        await stampContentFlags(ctx.engine, searchResults);
+        searchDegraded = 'keyword_only_no_embedding_provider';
+      } else {
+        searchResults = await hybridSearchCached(ctx.engine, queryText, {
+          limit,
+          expansion: false,
+          ...searchScope,
+        });
+      }
+      bumpLastRetrievedAt(ctx.engine, searchResults.map(r => r.page_id));
+    }
+
+    // ── MEMORY_VERBS v1 — server-side budget packing. Facts pack first (cheap,
+    // high-precision one-liners, per-arm limit-capped so starvation is bounded),
+    // then search results take the remainder. packToBudget treats budget<=0 as
+    // a no-op, so an exhausted remainder must drop explicitly.
+    let packedFacts = rows;
+    let packedResults = searchResults;
+    let budgetUsed: number | undefined;
+    let droppedCount: number | undefined;
+    if (budgetTokens !== null) {
+      const factsPack = packToBudget(rows, r => estimateTokens(r.fact), budgetTokens);
+      packedFacts = factsPack.items;
+      const remaining = budgetTokens - factsPack.meta.used;
+      const resultsPack =
+        remaining > 0
+          ? packToBudget(searchResults, resultTokens, remaining)
+          : { items: [] as SearchResult[], meta: { budget: 0, used: 0, dropped: searchResults.length, kept: 0 } };
+      packedResults = resultsPack.items;
+      budgetUsed = factsPack.meta.used + resultsPack.meta.used;
+      droppedCount = factsPack.meta.dropped + resultsPack.meta.dropped;
+    }
+
     return {
-      facts: rows.map(r => ({
+      facts: packedFacts.map(r => ({
         id: r.id,
         fact: r.fact,
         kind: r.kind,
@@ -3999,9 +4160,33 @@ const recall: Operation = {
         source_session: r.source_session,
         confidence: r.confidence,
         created_at: r.created_at.toISOString(),
+        // MEMORY_VERBS v1 additive fields (G1B). `fact_id` is the opaque
+        // STRING id the `forget` verb accepts (legacy numeric `id` stays for
+        // pre-v1 consumers — legacy fields are frozen byte-equal). `provenance`
+        // is the protocol name for the stored source attribution.
+        fact_id: String(r.id),
+        provenance: r.source,
       })),
-      total: rows.length,
+      total: packedFacts.length,
       ...(pending_consolidation_count !== undefined ? { pending_consolidation_count } : {}),
+      // MEMORY_VERBS v1 envelope (G1B superset — additive on every response).
+      protocol_version: MEMORY_VERBS_VERSION,
+      ...(queryText
+        ? {
+            results: packedResults.map(r => ({
+              slug: r.slug,
+              title: r.title,
+              chunk: r.chunk_text,
+              evidence: r.evidence,
+              create_safety: r.create_safety,
+              provenance: r.slug,
+            })),
+            ...(searchDegraded ? { search_degraded: searchDegraded } : {}),
+          }
+        : {}),
+      ...(budgetTokens !== null
+        ? { budget_tokens: budgetTokens, budget_used: budgetUsed, dropped_count: droppedCount }
+        : {}),
     };
   },
 };
@@ -4060,6 +4245,65 @@ function parseSinceParam(raw: unknown): Date | null {
     return new Date(Date.now() - ms);
   }
   return null;
+}
+
+/**
+ * MEMORY_VERBS v1 — parse the `remember` verb's `ttl` param into a
+ * `valid_until` Date. Sibling of parseSinceParam, pointed FORWARD.
+ *
+ * Accepted forms (frozen in docs/protocol/MEMORY_VERBS_v1.md):
+ *   - relative duration shorthand: '30d', '12h', '45m', '90s' (also
+ *     spelled-out: '30 days', '12 hours') → now + duration
+ *   - absolute ISO 8601 date or datetime: '2026-07-12', '2026-07-12T00:00:00Z'
+ *
+ * Explicitly REJECTED with a self-correcting suggestion: ISO-8601 duration
+ * syntax ('P30D', 'PT12H') — agents that read "ISO 8601" as durations get a
+ * fix, not a mystery. Returns null for null/undefined/empty (= never expires).
+ * Throws verbError('invalid_params') on anything unparseable.
+ */
+export function parseTtlParam(raw: unknown): Date | null {
+  if (raw == null) return null;
+  if (typeof raw !== 'string') {
+    throw verbError(
+      'invalid_params',
+      `ttl must be a string, got ${typeof raw}.`,
+      'Pass a duration like "30d" or "12h", or an absolute ISO 8601 timestamp like "2026-07-12T00:00:00Z".',
+    );
+  }
+  const s = raw.trim();
+  if (!s) return null;
+
+  // ISO-8601 DURATION syntax is a documented trap — reject with the fix.
+  if (/^P(T|\d)/i.test(s) && /^P(?:\d+[YMWD])*(?:T(?:\d+[HMS])+)?$/i.test(s)) {
+    throw verbError(
+      'invalid_params',
+      `ttl "${s}" looks like an ISO-8601 duration, which is not accepted.`,
+      `Use the shorthand form instead (e.g. "${s.replace(/^PT?/i, '').toLowerCase()}" style: "30d", "12h"), or an absolute ISO 8601 expiry timestamp.`,
+    );
+  }
+
+  // Relative duration shorthand → now + duration.
+  const dur = s.match(/^(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?)$/i);
+  if (dur) {
+    const n = parseInt(dur[1], 10);
+    const unit = dur[2].toLowerCase();
+    const ms =
+      unit.startsWith('s') ? n * 1000 :
+      unit.startsWith('m') ? n * 60 * 1000 :
+      unit.startsWith('h') ? n * 60 * 60 * 1000 :
+      n * 24 * 60 * 60 * 1000;
+    return new Date(Date.now() + ms);
+  }
+
+  // Absolute ISO 8601 date or datetime.
+  const iso = Date.parse(s);
+  if (Number.isFinite(iso)) return new Date(iso);
+
+  throw verbError(
+    'invalid_params',
+    `Cannot parse ttl "${s}".`,
+    'Pass a duration like "30d" or "12h", or an absolute ISO 8601 timestamp like "2026-07-12T00:00:00Z". Omit ttl for a fact that never expires.',
+  );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -5020,6 +5264,10 @@ const run_skillopt: Operation = {
 };
 
 export const operations: Operation[] = [
+  // MEMORY_VERBS v1 (Cathedral 1) — remember/entity/synthesize/forget live in
+  // verbs.ts; the fifth verb is the extended `recall` op below. Spread first
+  // so `--surface verbs` agents see them at the top of the tool list.
+  ...verbOperations,
   // Page CRUD
   get_page, put_page, delete_page, list_pages,
   // v0.26.5 destructive-guard ops (page-level soft-delete + recovery + admin purge)
