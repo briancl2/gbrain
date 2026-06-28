@@ -50,6 +50,11 @@ import {
   type RecencyDecayConfig,
   type RecencyDecayMap,
 } from './recency-decay.ts';
+import {
+  applyAuthorityStatusSignals,
+  loadAuthorityStatusFrontmatter,
+  loadCurrentAuthorityCandidates,
+} from './authority-status.ts';
 
 export const RRF_K = 60;
 const COMPILED_TRUTH_BOOST = 2.0;
@@ -425,6 +430,9 @@ export interface PostFusionOpts {
    * metadata stages so a title hit can't bury a strong semantic match.
    */
   titleBoost?: number;
+  /** Source scope to preserve when authority-status supplement fetches candidates. */
+  sourceId?: string;
+  sourceIds?: string[];
 }
 
 export async function runPostFusionStages(
@@ -506,6 +514,22 @@ export async function runPostFusionStages(
       applyTitleBoost(results, opts.query, opts.titleBoost, floorThreshold);
     } catch {
       // Non-fatal; preserves the per-stage contract.
+    }
+  }
+
+  // Issue #164 class repair — current/active owner-truth queries need explicit
+  // authority metadata to beat stale-but-lexically-relevant distractors.
+  if (opts.query) {
+    try {
+      const frontmatterByPageId = await loadAuthorityStatusFrontmatter(engine, results);
+      applyAuthorityStatusSignals(results, frontmatterByPageId, opts.query);
+      const candidates = await loadCurrentAuthorityCandidates(engine, opts.query, results, {
+        sourceId: opts.sourceId,
+        sourceIds: opts.sourceIds,
+      });
+      if (candidates.length > 0) results.push(...candidates);
+    } catch {
+      // Non-fatal; metadata attribution must never break retrieval.
     }
   }
 
@@ -1009,6 +1033,8 @@ export async function hybridSearch(
     // The raw query drives the matcher; default factor when the knob is unset.
     query,
     titleBoost: resolvedMode.title_boost,
+    sourceId: opts?.sourceId,
+    sourceIds: opts?.sourceIds,
   };
 
   // v0.43 — build the relational recall arm ONCE here, before any return

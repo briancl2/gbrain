@@ -763,6 +763,14 @@ export interface SearchResult {
   graph_cross_source_boost?: number;
   /** Multiplier applied by applyGraphSignals (session demote; <1.0). */
   session_demote_factor?: number;
+  /**
+   * Multiplier applied by the authority-status stage when a query asks for
+   * current/active truth. Values can be >1.0 for current owner/source truth
+   * or <1.0 for explicitly stale/superseded pages.
+   */
+  authority_status_factor?: number;
+  /** Authority metadata signal that drove authority_status_factor. */
+  authority_status?: 'current' | 'stale';
   /** Post-rerank rank delta: original_index - new_index in the reranker's
    *  topNIn head. Positive means rank improved (moved closer to top).
    *  Undefined when no reranker fired. The raw reranker relevance score
