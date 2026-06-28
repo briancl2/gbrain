@@ -15,6 +15,8 @@
  *      + exact-match ×1.50                      ← when exact_match_boost > 1
  *      + adjacency ×1.05 (hits=3)               ← when graph_adjacency_boost set
  *      + cross_source ×1.10 (other_sources=2)   ← when graph_cross_source_boost set
+ *      + authority_status(current) ×1.35        ← when authority_status_factor > 1
+ *      - authority_status(stale) ×0.55          ← when authority_status_factor < 1
  *      - session_demote ×0.95 (prefix=chat/x)   ← when session_demote_factor set
  *      ↑ reranker rank +2 (head improved)       ← when reranker_delta > 0
  *      ↓ reranker rank -1 (head moved down)     ← when reranker_delta < 0
@@ -76,6 +78,12 @@ export function formatResultExplain(
     anyBoost = true;
     const cs = result.graph_cross_source_hits ?? '?';
     lines.push(`   + cross_source ×${fmt(result.graph_cross_source_boost)} (other_sources=${cs})`);
+  }
+  if (result.authority_status_factor !== undefined && result.authority_status_factor !== 1.0) {
+    anyBoost = true;
+    const sign = result.authority_status_factor > 1.0 ? '+' : '-';
+    const status = result.authority_status ?? 'unknown';
+    lines.push(`   ${sign} authority_status(${status}) ×${fmt(result.authority_status_factor)}`);
   }
   if (result.session_demote_factor !== undefined) {
     anyBoost = true;

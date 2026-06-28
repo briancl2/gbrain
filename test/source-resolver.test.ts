@@ -54,7 +54,8 @@ describe('resolveSourceId priority 1 — explicit flag', () => {
 
   test('rejects unregistered explicit source with actionable error', async () => {
     const engine = makeStub(['default'], [], null);
-    await expect(resolveSourceId(engine, 'ghost')).rejects.toThrow(/not found/);
+    await expect(resolveSourceId(engine, 'ghost')).rejects.toThrow(/gbrain sources add ghost --path <path>/);
+    await expect(resolveSourceId(engine, 'ghost')).rejects.toThrow(/omit --source\/GBRAIN_SOURCE/);
   });
 
   test('rejects invalid format', async () => {

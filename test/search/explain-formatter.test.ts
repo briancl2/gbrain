@@ -96,6 +96,19 @@ describe('formatResultExplain — every boost type', () => {
     expect(out).toContain('+ cross_source ×1.1 (other_sources=2)');
   });
 
+  test('authority_status_factor renders current boost and stale demote', () => {
+    const current = formatResultExplain(
+      r('current', 1.35, { base_score: 1.0, authority_status: 'current', authority_status_factor: 1.35 }),
+      1,
+    );
+    const stale = formatResultExplain(
+      r('stale', 0.55, { base_score: 1.0, authority_status: 'stale', authority_status_factor: 0.55 }),
+      2,
+    );
+    expect(current).toContain('+ authority_status(current) ×1.35');
+    expect(stale).toContain('- authority_status(stale) ×0.55');
+  });
+
   test('session_demote_factor renders as DEMOTE not boost', () => {
     const out = formatResultExplain(
       r('chat/b', 0.95, {

@@ -196,9 +196,10 @@ async function assertSourceExists(engine: BrainEngine, id: string): Promise<void
   );
   if (rows.length === 0) {
     throw new Error(
-      `Source "${id}" not found. Available sources: ` +
-      `run \`gbrain sources list\` to see registered sources, ` +
-      `or \`gbrain sources add ${id}\` to create it.`,
+      `Source "${id}" not found. Source ids must be registered before writes. ` +
+      `Run \`gbrain sources list\` to see registered sources, ` +
+      `\`gbrain sources add ${id} --path <path>\` to create an on-disk source, ` +
+      `or omit --source/GBRAIN_SOURCE to use the resolved default source.`,
     );
   }
 }
