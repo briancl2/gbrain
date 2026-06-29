@@ -7,6 +7,7 @@
  *   - meta accounting (used / kept / dropped) matches the actual cut
  *   - undefined / <=0 budget is a no-op
  *   - first-result-too-big returns empty list
+ *   - first-result-too-big can be retained by explicit search-path opt-in
  *
  * Lives in test/token-budget.test.ts to mirror existing search/* test naming.
  */
@@ -119,5 +120,16 @@ describe('enforceTokenBudget', () => {
     const { results: kept, meta } = enforceTokenBudget([big, small], 5);
     expect(kept).toHaveLength(0);
     expect(meta.dropped).toBe(2);
+  });
+
+  test('keepFirst opt-in preserves oversized top evidence hit', () => {
+    const big = makeResult({ slug: 'big', title: 'a', chunk_text: 'x'.repeat(1000) });
+    const small = makeResult({ slug: 'small', title: 'a', chunk_text: 'xxxx' });
+    const { results: kept, meta } = enforceTokenBudget([big, small], 5, { keepFirst: true });
+    expect(kept).toHaveLength(1);
+    expect(kept[0].slug).toBe('big');
+    expect(meta.used).toBeGreaterThan(5);
+    expect(meta.dropped).toBe(1);
+    expect(meta.kept).toBe(1);
   });
 });

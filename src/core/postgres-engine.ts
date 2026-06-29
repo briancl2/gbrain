@@ -59,6 +59,7 @@ import { logConnectionEvent } from './connection-audit.ts';
 import { validateSlug, contentHash, rowToPage, rowToStalePage, rowToChunk, rowToSearchResult, parseEmbedding, tryParseEmbedding, takeRowToTake, isUndefinedTableError, warnOncePerProcess } from './utils.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildRecencyComponentSql, buildBestPerPagePoolCte } from './search/sql-ranking.ts';
+import { buildKeywordFallbackPlan } from './search/keyword-fallback.ts';
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_DIMENSIONS } from './ai/defaults.ts';
 import { DELETE_BATCH_SIZE } from './engine-constants.ts';
 
@@ -1678,7 +1679,120 @@ export class PostgresEngine implements BrainEngine {
       await sql`SET LOCAL statement_timeout = '8s'`;
       return await sql.unsafe(rawQuery, params as Parameters<typeof sql.unsafe>[1]);
     });
-    return rows.map(rowToSearchResult);
+    if (rows.length > 0) {
+      return rows.map(rowToSearchResult);
+    }
+
+    const fallback = opts?.fallback === false ? null : buildKeywordFallbackPlan(query);
+    if (!fallback) return [];
+
+    const fallbackParams: unknown[] = [fallback.websearchQuery];
+    let fallbackTypeClause = '';
+    if (type) {
+      fallbackParams.push(type);
+      fallbackTypeClause = `AND p.type = $${fallbackParams.length}`;
+    }
+    let fallbackTypesClause = '';
+    if (opts?.types && opts.types.length > 0) {
+      fallbackParams.push(opts.types);
+      fallbackTypesClause = `AND p.type = ANY($${fallbackParams.length}::text[])`;
+    }
+    let fallbackExcludeSlugsClause = '';
+    if (excludeSlugs?.length) {
+      fallbackParams.push(excludeSlugs);
+      fallbackExcludeSlugsClause = `AND p.slug != ALL($${fallbackParams.length}::text[])`;
+    }
+    let fallbackLanguageClause = '';
+    if (language) {
+      fallbackParams.push(language);
+      fallbackLanguageClause = `AND cc.language = $${fallbackParams.length}`;
+    }
+    let fallbackSymbolKindClause = '';
+    if (symbolKind) {
+      fallbackParams.push(symbolKind);
+      fallbackSymbolKindClause = `AND cc.symbol_type = $${fallbackParams.length}`;
+    }
+    let fallbackAfterDateClause = '';
+    if (opts?.afterDate) {
+      fallbackParams.push(opts.afterDate);
+      fallbackAfterDateClause = `AND COALESCE(p.updated_at, p.created_at) > $${fallbackParams.length}::timestamptz`;
+    }
+    let fallbackBeforeDateClause = '';
+    if (opts?.beforeDate) {
+      fallbackParams.push(opts.beforeDate);
+      fallbackBeforeDateClause = `AND COALESCE(p.updated_at, p.created_at) < $${fallbackParams.length}::timestamptz`;
+    }
+    let fallbackSourceClause = '';
+    if (opts?.sourceIds && opts.sourceIds.length > 0) {
+      fallbackParams.push(opts.sourceIds);
+      fallbackSourceClause = `AND p.source_id = ANY($${fallbackParams.length}::text[])`;
+    } else if (opts?.sourceId) {
+      fallbackParams.push(opts.sourceId);
+      fallbackSourceClause = `AND p.source_id = $${fallbackParams.length}`;
+    }
+    fallbackParams.push(innerLimit);
+    const fallbackInnerLimitParam = `$${fallbackParams.length}`;
+    fallbackParams.push(limit);
+    const fallbackLimitParam = `$${fallbackParams.length}`;
+    fallbackParams.push(offset);
+    const fallbackOffsetParam = `$${fallbackParams.length}`;
+
+    const fallbackText = `lower(COALESCE(cc.chunk_text, '') || ' ' || COALESCE(p.title, '') || ' ' || COALESCE(p.slug, ''))`;
+    const matchTerms: string[] = [];
+    for (const term of fallback.terms) {
+      fallbackParams.push(term);
+      matchTerms.push(`CASE WHEN ${fallbackText} LIKE '%' || $${fallbackParams.length} || '%' THEN 1 ELSE 0 END`);
+    }
+    const matchCount = matchTerms.join(' + ');
+    fallbackParams.push(fallback.minMatches);
+    const minMatchesParam = `$${fallbackParams.length}`;
+    const fallbackVector = `to_tsvector('english', COALESCE(p.title, '') || ' ' || COALESCE(p.slug, '') || ' ' || COALESCE(cc.chunk_text, ''))`;
+    const fallbackQuery = `
+      WITH ranked_chunks AS (
+        SELECT
+          p.slug, p.id as page_id, p.title, p.type, p.source_id,
+          p.effective_date, p.effective_date_source,
+          cc.id as chunk_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
+          (
+            ts_rank(${fallbackVector}, websearch_to_tsquery('english', $1)) * ${sourceFactorCase}
+            + ((${matchCount})::real * 0.001)
+          ) AS score
+        FROM content_chunks cc
+        JOIN pages p ON p.id = cc.page_id
+        JOIN sources s ON s.id = p.source_id
+        WHERE ${fallbackVector} @@ websearch_to_tsquery('english', $1)
+          AND (${matchCount}) >= ${minMatchesParam}
+          ${fallbackTypeClause}
+          ${fallbackTypesClause}
+          ${fallbackExcludeSlugsClause}
+          ${detailLow ? `AND cc.chunk_source = 'compiled_truth'` : ''}
+          ${fallbackLanguageClause}
+          ${fallbackSymbolKindClause}
+          ${fallbackAfterDateClause}
+          ${fallbackBeforeDateClause}
+          ${fallbackSourceClause}
+          ${hardExcludeClause}
+          ${visibilityClause}
+          AND cc.modality = 'text'
+        ORDER BY score DESC
+        LIMIT ${fallbackInnerLimitParam}
+      ),
+      ${buildBestPerPagePoolCte('ranked_chunks')}
+      SELECT slug, page_id, title, type, source_id,
+        effective_date, effective_date_source,
+        chunk_id, chunk_index, chunk_text, chunk_source, score,
+        false AS stale
+      FROM best_per_page
+      ORDER BY score DESC
+      LIMIT ${fallbackLimitParam}
+      OFFSET ${fallbackOffsetParam}
+    `;
+
+    const fallbackRows = await sql.begin(async sql => {
+      await sql`SET LOCAL statement_timeout = '8s'`;
+      return await sql.unsafe(fallbackQuery, fallbackParams as Parameters<typeof sql.unsafe>[1]);
+    });
+    return fallbackRows.map(rowToSearchResult);
   }
 
   /**

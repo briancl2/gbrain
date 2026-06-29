@@ -1088,7 +1088,7 @@ export async function hybridSearch(
     stampEvidence(noEmbedHopped);
     const noEmbedSliced = noEmbedHopped.slice(offset, offset + limit);
     // v0.32.3 search-lite: budget enforcement on the no-embedding-provider path.
-    const { results: noEmbedBudgeted, meta: noEmbedBudgetMeta } = enforceTokenBudget(noEmbedSliced, resolvedMode.tokenBudget);
+    const { results: noEmbedBudgeted, meta: noEmbedBudgetMeta } = enforceTokenBudget(noEmbedSliced, resolvedMode.tokenBudget, { keepFirst: true });
     await stampContentFlags(engine, noEmbedBudgeted);
     lastResultsCount = noEmbedBudgeted.length;
     lastRank1Score = noEmbedBudgeted[0] ? (noEmbedBudgeted[0].base_score ?? noEmbedBudgeted[0].score) : undefined;
@@ -1320,7 +1320,7 @@ export async function hybridSearch(
     stampEvidence(kwHopped);
     const kwSliced = kwHopped.slice(offset, offset + limit);
     // v0.32.3 search-lite: budget enforcement on the keyword-fallback path too.
-    const { results: kwBudgeted, meta: kwBudgetMeta } = enforceTokenBudget(kwSliced, resolvedMode.tokenBudget);
+    const { results: kwBudgeted, meta: kwBudgetMeta } = enforceTokenBudget(kwSliced, resolvedMode.tokenBudget, { keepFirst: true });
     await stampContentFlags(engine, kwBudgeted);
     lastResultsCount = kwBudgeted.length;
     lastRank1Score = kwBudgeted[0] ? (kwBudgeted[0].base_score ?? kwBudgeted[0].score) : undefined;
@@ -1546,7 +1546,7 @@ export async function hybridSearch(
   // hybridSearchCached used to be the only place this fired; now bare
   // hybridSearch enforces it too so eval-replay + eval-longmemeval see
   // the same budget behavior as the production query op.
-  const { results: budgeted, meta: budgetMeta } = enforceTokenBudget(sliced, resolvedMode.tokenBudget);
+  const { results: budgeted, meta: budgetMeta } = enforceTokenBudget(sliced, resolvedMode.tokenBudget, { keepFirst: true });
   await stampContentFlags(engine, budgeted);
   lastResultsCount = budgeted.length;
   lastRank1Score = budgeted[0] ? (budgeted[0].base_score ?? budgeted[0].score) : undefined;
@@ -1739,7 +1739,7 @@ export async function hybridSearchCached(
       const sliced = hit.results.slice(offset, offset + limit);
 
       // Budget enforcement — same pipeline tail as fresh path.
-      const { results: budgeted, meta: budgetMeta } = enforceTokenBudget(sliced, opts?.tokenBudget);
+      const { results: budgeted, meta: budgetMeta } = enforceTokenBudget(sliced, opts?.tokenBudget, { keepFirst: true });
 
       // Emit meta describing the cache path.
       const cachedMeta: HybridSearchMeta = {
@@ -1792,7 +1792,7 @@ export async function hybridSearchCached(
   const innerMeta = innerMetaBox.current;
 
   // Token budget pass (no-op when not set).
-  const { results: budgeted, meta: budgetMeta } = enforceTokenBudget(results, opts?.tokenBudget);
+  const { results: budgeted, meta: budgetMeta } = enforceTokenBudget(results, opts?.tokenBudget, { keepFirst: true });
 
   // Compose the final meta and emit. v0.42.3.0 (Codex #5): carry over the
   // inner meta's decision fields — pre-fix this manual rebuild silently dropped

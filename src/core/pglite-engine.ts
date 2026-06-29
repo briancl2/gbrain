@@ -51,6 +51,7 @@ import { GBrainError, PAGE_SORT_SQL, ENRICH_ORDER_SQL } from './types.ts';
 import { computeAnomaliesFromBuckets } from './cycle/anomaly.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause, buildRecencyComponentSql, buildBestPerPagePoolCte } from './search/sql-ranking.ts';
+import { buildKeywordFallbackPlan } from './search/keyword-fallback.ts';
 import {
   normalizeEngineColumn,
   buildVectorCastFragment,
@@ -1597,7 +1598,85 @@ export class PGLiteEngine implements BrainEngine {
       params
     );
 
-    return (rows as Record<string, unknown>[]).map(rowToSearchResult);
+    if (rows.length > 0) {
+      return (rows as Record<string, unknown>[]).map(rowToSearchResult);
+    }
+
+    const fallback = opts?.fallback === false ? null : buildKeywordFallbackPlan(query);
+    if (!fallback) return [];
+
+    const fallbackParams: unknown[] = [fallback.websearchQuery, innerLimit, limit, offset];
+    let fallbackExtraFilter = '';
+    if (opts?.language) {
+      fallbackParams.push(opts.language);
+      fallbackExtraFilter += ` AND cc.language = $${fallbackParams.length}`;
+    }
+    if (opts?.symbolKind) {
+      fallbackParams.push(opts.symbolKind);
+      fallbackExtraFilter += ` AND cc.symbol_type = $${fallbackParams.length}`;
+    }
+    if (opts?.types && opts.types.length > 0) {
+      fallbackParams.push(opts.types);
+      fallbackExtraFilter += ` AND p.type = ANY($${fallbackParams.length}::text[])`;
+    }
+    if (opts?.afterDate) {
+      fallbackParams.push(opts.afterDate);
+      fallbackExtraFilter += ` AND COALESCE(p.effective_date, p.updated_at, p.created_at) > $${fallbackParams.length}::timestamptz`;
+    }
+    if (opts?.beforeDate) {
+      fallbackParams.push(opts.beforeDate);
+      fallbackExtraFilter += ` AND COALESCE(p.effective_date, p.updated_at, p.created_at) < $${fallbackParams.length}::timestamptz`;
+    }
+    if (opts?.sourceIds && opts.sourceIds.length > 0) {
+      fallbackParams.push(opts.sourceIds);
+      fallbackExtraFilter += ` AND p.source_id = ANY($${fallbackParams.length}::text[])`;
+    } else if (opts?.sourceId) {
+      fallbackParams.push(opts.sourceId);
+      fallbackExtraFilter += ` AND p.source_id = $${fallbackParams.length}`;
+    }
+
+    const fallbackText = `lower(COALESCE(cc.chunk_text, '') || ' ' || COALESCE(p.title, '') || ' ' || COALESCE(p.slug, ''))`;
+    const matchTerms: string[] = [];
+    for (const term of fallback.terms) {
+      fallbackParams.push(term);
+      matchTerms.push(`CASE WHEN ${fallbackText} LIKE '%' || $${fallbackParams.length} || '%' THEN 1 ELSE 0 END`);
+    }
+    const matchCount = matchTerms.join(' + ');
+    fallbackParams.push(fallback.minMatches);
+    const minMatchesParam = `$${fallbackParams.length}`;
+    const fallbackVector = `to_tsvector('english', COALESCE(p.title, '') || ' ' || COALESCE(p.slug, '') || ' ' || COALESCE(cc.chunk_text, ''))`;
+
+    const { rows: fallbackRows } = await this.db.query(
+      `WITH ranked AS (
+         SELECT
+           p.slug, p.id as page_id, p.title, p.type, p.source_id,
+           p.effective_date, p.effective_date_source,
+           cc.id as chunk_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
+           (
+             ts_rank(${fallbackVector}, websearch_to_tsquery('english', $1)) * ${sourceFactorCase}
+             + ((${matchCount})::real * 0.001)
+           ) AS score,
+           CASE WHEN p.updated_at < (
+             SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id
+           ) THEN true ELSE false END AS stale
+         FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id
+         JOIN sources s ON s.id = p.source_id
+         WHERE ${fallbackVector} @@ websearch_to_tsquery('english', $1)
+           AND (${matchCount}) >= ${minMatchesParam}
+           ${detailFilter}${fallbackExtraFilter} ${hardExcludeClause} ${visibilityClause}
+           AND cc.modality = 'text'
+         ORDER BY score DESC
+         LIMIT $2
+       ),
+       ${buildBestPerPagePoolCte('ranked')}
+       SELECT * FROM best_per_page
+       ORDER BY score DESC, page_id ASC, chunk_id ASC
+       LIMIT $3 OFFSET $4`,
+      fallbackParams,
+    );
+
+    return (fallbackRows as Record<string, unknown>[]).map(rowToSearchResult);
   }
 
   /**

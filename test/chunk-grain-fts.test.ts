@@ -120,6 +120,96 @@ describe('Cathedral II Layer 3 — searchKeyword external contract', () => {
   });
 });
 
+describe('Natural-language keyword fallback — no embedding provider', () => {
+  let engine: PGLiteEngine;
+
+  beforeAll(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+
+    await engine.putPage('research/wave2-active-child-1160', {
+      type: 'note',
+      title: 'Wave 2 active child 1160',
+      compiled_truth: 'Issue 1160 is the active child for the GBrain production research program.',
+      timeline: '',
+    });
+    await engine.upsertChunks('research/wave2-active-child-1160', [
+      {
+        chunk_index: 0,
+        chunk_text: 'Issue 1160 is the active child for the GBrain production research program.',
+        chunk_source: 'compiled_truth',
+      },
+    ]);
+
+    await engine.putPage('research/generic-program-note', {
+      type: 'note',
+      title: 'Generic production research note',
+      compiled_truth: 'The production research program has generic background context only.',
+      timeline: '',
+    });
+    await engine.upsertChunks('research/generic-program-note', [
+      {
+        chunk_index: 0,
+        chunk_text: 'The production research program has generic background context only.',
+        chunk_source: 'compiled_truth',
+      },
+    ]);
+
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, config) VALUES ('foreign', 'foreign', '{}'::jsonb) ON CONFLICT DO NOTHING`,
+    );
+    await engine.putPage('research/wave2-active-child-1160', {
+      type: 'note',
+      title: 'Foreign Wave 2 active child 1160',
+      compiled_truth: 'Issue 1160 is the active child for the GBrain production research program in the foreign source.',
+      timeline: '',
+    }, { sourceId: 'foreign' });
+    await engine.upsertChunks('research/wave2-active-child-1160', [
+      {
+        chunk_index: 0,
+        chunk_text: 'Issue 1160 is the active child for the GBrain production research program in the foreign source.',
+        chunk_source: 'compiled_truth',
+      },
+    ], { sourceId: 'foreign' });
+  });
+
+  afterAll(async () => {
+    await engine.disconnect();
+  }, 30_000);
+
+  test('recovers a strict-FTS miss for a natural-language research question', async () => {
+    const results = await engine.searchKeyword(
+      'What is the current active child for the GBrain production research program?',
+      { limit: 5, sourceId: 'default' },
+    );
+
+    expect(results.map(r => r.slug)).toContain('research/wave2-active-child-1160');
+    expect(results[0]!.slug).toBe('research/wave2-active-child-1160');
+  });
+
+  test('does not turn thin generic overlap into evidence', async () => {
+    const results = await engine.searchKeyword(
+      'Which production research program approved default cutover authorization?',
+      { limit: 5, sourceId: 'default' },
+    );
+
+    expect(results.map(r => r.slug)).not.toContain('research/generic-program-note');
+  });
+
+  test('preserves source scoping on fallback retrieval', async () => {
+    const results = await engine.searchKeyword(
+      'What is the current active child for the GBrain production research program?',
+      { limit: 5, sourceId: 'default' },
+    );
+
+    expect(results.length).toBeGreaterThan(0);
+    for (const result of results) {
+      expect(result.source_id).toBe('default');
+    }
+  });
+});
+
 describe('Cathedral II Layer 3 — searchKeywordChunks (internal primitive)', () => {
   let engine: PGLiteEngine;
 
