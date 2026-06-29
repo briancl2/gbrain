@@ -751,7 +751,11 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // bump 11→12: recency decay policy now participates in query ranking via
 // source gbrain.yml / GBRAIN_RECENCY_DECAY. Cache rows ranked with one policy
 // must not be served after that policy changes.
-export const KNOBS_HASH_VERSION = 12;
+//
+// bump 12→13: strict current-evidence guard now changes which current-detail
+// source-routed searches are allowed to return results. Pre-guard cache rows
+// can contain stale adjacent owner cards for queries that must now fail closed.
+export const KNOBS_HASH_VERSION = 13;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The

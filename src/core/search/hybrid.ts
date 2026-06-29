@@ -51,6 +51,7 @@ import {
   type RecencyDecayMap,
 } from './recency-decay.ts';
 import {
+  applyCurrentEvidenceGuard,
   applyAuthorityStatusSignals,
   loadAuthorityStatusFrontmatter,
   loadCurrentAuthorityCandidates,
@@ -528,6 +529,7 @@ export async function runPostFusionStages(
         sourceIds: opts.sourceIds,
       });
       if (candidates.length > 0) results.push(...candidates);
+      applyCurrentEvidenceGuard(results, frontmatterByPageId, opts.query);
     } catch {
       // Non-fatal; metadata attribution must never break retrieval.
     }
