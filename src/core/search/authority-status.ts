@@ -179,7 +179,7 @@ export function currentEvidenceAnchors(query: string): string[] {
     pushUnique(out, seen, m[0]);
   }
 
-  for (const m of q.matchAll(/\bwave\s+[a-z0-9]+\b/g)) pushUnique(out, seen, m[0]);
+  for (const m of q.matchAll(/\bwave\s+(?:[a-z]|\d+|[ivxlcdm]{1,5})\b/g)) pushUnique(out, seen, m[0]);
   for (const m of q.matchAll(/\barc\s+\d+\b/g)) pushUnique(out, seen, m[0]);
 
   for (const m of q.matchAll(/\b[a-z][a-z0-9_]{2,}\b/g)) {

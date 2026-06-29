@@ -79,6 +79,11 @@ describe('authority-status query gating', () => {
     expect(currentEvidenceAnchors('Wave I Arc 2 repaired_briancl2_master sync.repo_path 90d92f1e issue164-research'))
       .toEqual(['90d92f1e', 'wave i', 'arc 2', 'repaired-briancl2-master', 'sync-repo-path']);
   });
+
+  test('does not treat ordinary prose after next wave as a formal wave anchor', () => {
+    expect(currentEvidenceAnchors('What should the next wave remember about the prior GBrain scratch run?'))
+      .toEqual([]);
+  });
 });
 
 describe('applyAuthorityStatusSignals', () => {
