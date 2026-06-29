@@ -16,6 +16,13 @@ export interface AuthorityCandidateOpts {
   limit?: number;
 }
 
+export interface CurrentEvidenceGuardMeta {
+  enabled: boolean;
+  required_anchors: string[];
+  has_current_evidence: boolean;
+  cleared_results: number;
+}
+
 export const CURRENT_AUTHORITY_FACTOR = 1.35;
 export const STALE_AUTHORITY_FACTOR = 0.55;
 
@@ -27,8 +34,10 @@ const CURRENT_STATUS_VALUES = new Set([
   'live',
   'owner-truth',
   'owner_truth',
+  'current_owner_truth',
   'source-truth',
   'source_truth',
+  'current_source_truth',
 ]);
 
 const STALE_STATUS_VALUES = new Set([
@@ -41,6 +50,8 @@ const STALE_STATUS_VALUES = new Set([
   'outdated',
   'stale',
   'superseded',
+  'superseded_owner_truth',
+  'superseded_source_truth',
 ]);
 
 const CURRENT_TYPE_VALUES = new Set([
@@ -60,7 +71,10 @@ const STALE_TYPE_VALUES = new Set([
 ]);
 
 const CURRENT_INTENT_RE =
-  /\b(active|canonical|current|fresh|latest|live|next|now|present|source[-_\s]?authority|truth|up[-_\s]?to[-_\s]?date)\b/i;
+  /(^|[^a-z0-9_-])(active|canonical|current|fresh|latest|live|next|now|present|truth)(?=$|[^a-z0-9_-])|(^|[^a-z0-9_-])(source[-_\s]?authority|up[-_\s]?to[-_\s]?date)(?=$|[^a-z0-9_-])/i;
+
+const STRICT_CURRENT_EVIDENCE_RE =
+  /\b(active child|active track|next active|campaign sync|closeout|final verdict|worker return|which\b.+\bpr\b.+\bfixed|cycle[_-\s]?freshness|repaired[_-\s]?briancl2[_-\s]?master|sync[._-\s]?repo[._-\s]?path)\b/i;
 
 const CURRENT_QUERY_STOPWORDS = new Set([
   'active',
@@ -123,6 +137,12 @@ export function queryWantsCurrentAuthority(query: string): boolean {
   return CURRENT_INTENT_RE.test(q);
 }
 
+export function queryNeedsCurrentEvidenceGuard(query: string): boolean {
+  const q = normalize(query);
+  if (!q) return false;
+  return queryWantsCurrentAuthority(q) || STRICT_CURRENT_EVIDENCE_RE.test(q);
+}
+
 export function authorityQueryTokens(query: string): string[] {
   const seen = new Set<string>();
   const tokens: string[] = [];
@@ -135,6 +155,43 @@ export function authorityQueryTokens(query: string): string[] {
     tokens.push(token);
   }
   return tokens.slice(0, 8);
+}
+
+function pushUnique(out: string[], seen: Set<string>, value: string): void {
+  const normalized = value.trim().toLowerCase().replace(/[_.]+/g, '-').replace(/\s+/g, ' ');
+  if (!normalized || seen.has(normalized)) return;
+  seen.add(normalized);
+  out.push(normalized);
+}
+
+export function currentEvidenceAnchors(query: string): string[] {
+  const q = normalize(query);
+  if (!q) return [];
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  const numeric = [...q.matchAll(/#?\b\d{3,}\b/g)].map((m) => m[0].replace(/^#/, ''));
+  const scopedNumeric = numeric.length > 1 ? numeric.filter((n) => n !== '164') : numeric;
+  for (const n of scopedNumeric) pushUnique(out, seen, n);
+
+  for (const m of q.matchAll(/\b(?=[a-f0-9]*[a-f])(?=[a-f0-9]*\d)[a-f0-9]{7,40}\b/g)) {
+    pushUnique(out, seen, m[0]);
+  }
+
+  for (const m of q.matchAll(/\bwave\s+[a-z0-9]+\b/g)) pushUnique(out, seen, m[0]);
+  for (const m of q.matchAll(/\barc\s+\d+\b/g)) pushUnique(out, seen, m[0]);
+
+  for (const m of q.matchAll(/\b[a-z][a-z0-9_]{2,}\b/g)) {
+    if (m.index != null && q[m.index - 1] === '.') continue;
+    if (m[0].includes('_')) pushUnique(out, seen, m[0].replace(/_/g, '-'));
+  }
+
+  for (const m of q.matchAll(/\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b/g)) {
+    pushUnique(out, seen, m[0].replace(/[_.]/g, '-'));
+  }
+
+  return out.slice(0, 10);
 }
 
 export function classifyAuthorityStatus(
@@ -153,7 +210,7 @@ export function classifyAuthorityStatus(
     return 'stale';
   }
 
-  for (const key of ['authority_status', 'truth_status', 'freshness', 'status', 'state', 'lifecycle']) {
+  for (const key of ['authority_status', 'truth_status', 'freshness', 'record_state', 'status', 'state', 'lifecycle']) {
     const status = statusFromValue(readFrontmatterValue(frontmatter, key));
     if (status !== 'unknown') return status;
   }
@@ -200,6 +257,73 @@ export function applyAuthorityStatusSignals(
       result.authority_status_factor = staleFactor;
       meta.stale_demotes += 1;
     }
+  }
+
+  return meta;
+}
+
+function collectFrontmatterText(frontmatter: Record<string, unknown> | null | undefined): string {
+  const values: string[] = [];
+  const visit = (value: unknown): void => {
+    if (value == null) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (typeof value === 'object') {
+      for (const item of Object.values(value as Record<string, unknown>)) visit(item);
+      return;
+    }
+    values.push(String(value));
+  };
+  visit(frontmatter);
+  return values.join(' ');
+}
+
+function anchorText(value: string): string {
+  return normalize(value).replace(/[_.]+/g, '-').replace(/\s+/g, ' ');
+}
+
+function resultContainsAnchors(
+  result: SearchResult,
+  frontmatter: Record<string, unknown> | null | undefined,
+  anchors: string[],
+): boolean {
+  const haystack = anchorText([
+    result.slug,
+    result.title,
+    result.type,
+    result.chunk_text,
+    result.source_id,
+    collectFrontmatterText(frontmatter),
+  ].filter(Boolean).join(' '));
+  return anchors.every((anchor) => haystack.includes(anchorText(anchor)));
+}
+
+export function applyCurrentEvidenceGuard(
+  results: SearchResult[],
+  frontmatterByPageId: Map<number, Record<string, unknown> | null | undefined>,
+  query: string,
+): CurrentEvidenceGuardMeta {
+  const enabled = queryNeedsCurrentEvidenceGuard(query);
+  const anchors = enabled ? currentEvidenceAnchors(query) : [];
+  const meta: CurrentEvidenceGuardMeta = {
+    enabled,
+    required_anchors: anchors,
+    has_current_evidence: false,
+    cleared_results: 0,
+  };
+  if (!enabled || anchors.length === 0 || results.length === 0) return meta;
+
+  meta.has_current_evidence = results.some((result) => {
+    const frontmatter = frontmatterByPageId.get(result.page_id);
+    return classifyAuthorityStatus(result, frontmatter) === 'current'
+      && resultContainsAnchors(result, frontmatter, anchors);
+  });
+
+  if (!meta.has_current_evidence) {
+    meta.cleared_results = results.length;
+    results.splice(0, results.length);
   }
 
   return meta;

@@ -409,7 +409,8 @@ describe('knobsHash determinism + cross-mode separation (CDX-4)', () => {
     // must not be served to post-fix lookups.
     // v0.42.54: bumped 11→12 because source/env recency-decay policy now
     // changes ranking and must participate in cache identity.
-    expect(KNOBS_HASH_VERSION).toBe(12);
+    // Issue #164: bumped 12→13 for strict current-evidence guard semantics.
+    expect(KNOBS_HASH_VERSION).toBe(13);
   });
 
   test('T1 (codex): floor_ratio set vs unset produces DIFFERENT hashes (cache contamination prevention)', () => {
@@ -574,8 +575,8 @@ describe('v0.40.4 — graph_signals knob', () => {
 });
 
 describe('v0.42.3.0 — autocut knobs', () => {
-  test('KNOBS_HASH_VERSION is 12 (11→12 recency policy cache isolation)', () => {
-    expect(KNOBS_HASH_VERSION).toBe(12);
+  test('KNOBS_HASH_VERSION is 13 (12→13 current-evidence guard cache isolation)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(13);
   });
 
   test('knobsHash differs when recency decay policy digest changes', () => {

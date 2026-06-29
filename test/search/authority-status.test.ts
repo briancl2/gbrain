@@ -4,7 +4,9 @@ import {
   applyAuthorityStatusSignals,
   authorityQueryTokens,
   classifyAuthorityStatus,
+  currentEvidenceAnchors,
   loadCurrentAuthorityCandidates,
+  queryNeedsCurrentEvidenceGuard,
   queryWantsCurrentAuthority,
 } from '../../src/core/search/authority-status.ts';
 import { formatResultExplain } from '../../src/core/search/explain-formatter.ts';
@@ -45,6 +47,11 @@ describe('authority-status classification', () => {
     expect(classifyAuthorityStatus(result('a', 'note', 1, 1), { status: 'current' })).toBe('current');
     expect(classifyAuthorityStatus(result('b', 'note', 1, 2), { superseded_by: 'newer-slug' })).toBe('stale');
   });
+
+  test('record_state current and superseded owner truth fields are honored', () => {
+    expect(classifyAuthorityStatus(result('a', 'note', 1, 1), { record_state: 'current_owner_truth' })).toBe('current');
+    expect(classifyAuthorityStatus(result('b', 'note', 1, 2), { record_state: 'superseded_owner_truth' })).toBe('stale');
+  });
 });
 
 describe('authority-status query gating', () => {
@@ -56,8 +63,20 @@ describe('authority-status query gating', () => {
     expect(queryWantsCurrentAuthority('Wave G promotion note')).toBe(false);
   });
 
+  test('hyphenated current-over-stale concept is not a current-owner query by itself', () => {
+    expect(queryWantsCurrentAuthority('current-over-stale is a native GBrain adoption blocker')).toBe(false);
+    expect(queryNeedsCurrentEvidenceGuard('current-over-stale is a native GBrain adoption blocker')).toBe(false);
+  });
+
   test('query tokens keep domain anchors but drop current-intent words', () => {
     expect(authorityQueryTokens('Issue 164 next active track GBrain')).toEqual(['issue', '164', 'gbrain']);
+  });
+
+  test('current evidence anchors keep child issue and Wave I detail while dropping parent-only Issue 164', () => {
+    expect(currentEvidenceAnchors('Issue 164 active child 1154 Wave I focused GBrain native repair current active track'))
+      .toEqual(['1154', 'wave i']);
+    expect(currentEvidenceAnchors('Wave I Arc 2 repaired_briancl2_master sync.repo_path 90d92f1e issue164-research'))
+      .toEqual(['90d92f1e', 'wave i', 'arc 2', 'repaired-briancl2-master', 'sync-repo-path']);
   });
 });
 
@@ -123,6 +142,32 @@ describe('runPostFusionStages authority-status integration', () => {
     expect(stale.score).toBeLessThan(current.score);
     expect(formatResultExplain(current, 1)).toContain('+ authority_status(current)');
     expect(formatResultExplain(stale, 2)).toContain('- authority_status(stale)');
+  });
+
+  test('clears strict current-detail results when no result has the required current evidence anchors', async () => {
+    const oldOwner = result('bma/issue164/current-owner-truth/issue1105-active-track', 'owner_truth', 2.7, 1);
+    const oldLearning = result('bma/issue164/learning/current-over-stale-layered-rca-2026-06-27', 'learning', 1.5, 2);
+    const engine = {
+      executeRaw: async (sql: string) => {
+        if (sql.includes('SELECT id, frontmatter FROM pages')) {
+          return [
+            { id: 1, frontmatter: { record_state: 'current_owner_truth', owner_surface: 'https://github.example/issues/1105' } },
+            { id: 2, frontmatter: { captured_at: '2026-06-27T20:58:58Z' } },
+          ];
+        }
+        return [];
+      },
+    } as any;
+    const results = [oldOwner, oldLearning];
+
+    await runPostFusionStages(engine, results, {
+      applyBacklinks: false,
+      salience: 'off',
+      recency: 'off',
+      query: 'Issue 164 active child 1154 Wave I focused GBrain native repair current active track',
+    });
+
+    expect(results).toEqual([]);
   });
 
   test('supplements a missing current authority candidate when stale is the only organic hit', async () => {

@@ -89,7 +89,7 @@ describe('alias_resolved boost stage', () => {
 });
 
 describe('KNOBS_HASH_VERSION', () => {
-  it('is 12 (11→12 recency policy cache isolation)', () => {
-    expect(KNOBS_HASH_VERSION).toBe(12);
+  it('is 13 (12→13 current-evidence guard cache isolation)', () => {
+    expect(KNOBS_HASH_VERSION).toBe(13);
   });
 });
