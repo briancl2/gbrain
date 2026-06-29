@@ -300,6 +300,41 @@ function resultContainsAnchors(
   return anchors.every((anchor) => haystack.includes(anchorText(anchor)));
 }
 
+function resultCarriesCurrentEvidence(
+  result: SearchResult,
+  frontmatter: Record<string, unknown> | null | undefined,
+  anchors: string[],
+): boolean {
+  if (!resultContainsAnchors(result, frontmatter, anchors)) return false;
+
+  const status = classifyAuthorityStatus(result, frontmatter);
+  if (status === 'current') return true;
+  if (status === 'stale') return false;
+
+  const haystack = normalize([
+    result.slug,
+    result.title,
+    result.type,
+    result.chunk_text,
+    result.source_id,
+    collectFrontmatterText(frontmatter),
+  ].filter(Boolean).join(' '));
+
+  const hasStrongCurrentText =
+    /\b(current active child|current active track|current active|next active|active compact|current ids?:)\b/.test(haystack);
+  const hasNegativeText =
+    /\b(not current|not selected|stale|superseded|deprecated|obsolete|old historical)\b/.test(haystack);
+  if (hasNegativeText && !hasStrongCurrentText) {
+    return false;
+  }
+
+  return hasStrongCurrentText
+    || (
+      /\b(active|current|latest|canonical)\b/.test(haystack)
+      && /\b(provenance|github:briancl2|https:\/\/github\.com)\b/.test(haystack)
+    );
+}
+
 export function applyCurrentEvidenceGuard(
   results: SearchResult[],
   frontmatterByPageId: Map<number, Record<string, unknown> | null | undefined>,
@@ -317,8 +352,7 @@ export function applyCurrentEvidenceGuard(
 
   meta.has_current_evidence = results.some((result) => {
     const frontmatter = frontmatterByPageId.get(result.page_id);
-    return classifyAuthorityStatus(result, frontmatter) === 'current'
-      && resultContainsAnchors(result, frontmatter, anchors);
+    return resultCarriesCurrentEvidence(result, frontmatter, anchors);
   });
 
   if (!meta.has_current_evidence) {

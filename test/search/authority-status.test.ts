@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { SearchResult } from '../../src/core/types.ts';
 import {
   applyAuthorityStatusSignals,
+  applyCurrentEvidenceGuard,
   authorityQueryTokens,
   classifyAuthorityStatus,
   currentEvidenceAnchors,
@@ -116,6 +117,51 @@ describe('applyAuthorityStatusSignals', () => {
     expect(current.score).toBe(0.8);
     expect(stale.authority_status_factor).toBeUndefined();
     expect(current.authority_status_factor).toBeUndefined();
+  });
+});
+
+describe('applyCurrentEvidenceGuard', () => {
+  test('accepts source-backed current evidence when frontmatter is not annotated', () => {
+    const current = result('wave2-active-child-1160', 'note', 1, 1160);
+    current.title = 'Wave2 Active Child 1160';
+    current.chunk_text = [
+      'Issue #1160 is the current active child for the GBrain production research program.',
+      'Required terms include GBrain Production Research Wave 2 and Natural-Language Retrieval Acceptance.',
+      'Issue #958 is old historical work and #1158 is not the selected active child.',
+      'Provenance: https://github.com/briancl2/build-meta-analysis/issues/1160.',
+      'Issue #164 Current State names #1160 as the active compact Wave 2 child.',
+    ].join(' ');
+    const results = [current];
+
+    const meta = applyCurrentEvidenceGuard(
+      results,
+      new Map([[1160, {}]]),
+      'Issue #164 active child #1160 GBrain Production Research Wave 2',
+    );
+
+    expect(meta.has_current_evidence).toBe(true);
+    expect(meta.cleared_results).toBe(0);
+    expect(results.map(r => r.slug)).toEqual(['wave2-active-child-1160']);
+  });
+
+  test('does not let stale text clear the current evidence guard', () => {
+    const stale = result('historical-958-not-selected-wave2', 'note', 1, 958);
+    stale.chunk_text = [
+      '#958 remains open historical campaign work, not selected for the Wave 2 GBrain retrieval gate.',
+      'The old autonomy candidate child is not the selected work; #1160 is active.',
+      'Provenance: https://github.com/briancl2/build-meta-analysis/issues/164.',
+    ].join(' ');
+    const results = [stale];
+
+    const meta = applyCurrentEvidenceGuard(
+      results,
+      new Map([[958, {}]]),
+      'Issue #164 active child #1160 GBrain Production Research Wave 2',
+    );
+
+    expect(meta.has_current_evidence).toBe(false);
+    expect(meta.cleared_results).toBe(1);
+    expect(results).toEqual([]);
   });
 });
 

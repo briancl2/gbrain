@@ -62,6 +62,17 @@ export interface TokenBudgetMeta {
   kept: number;
 }
 
+export interface PackToBudgetOptions {
+  /**
+   * Preserve the first ranked item even when it exceeds the budget.
+   *
+   * The default remains a strict hard cap for generic packing. Search callers
+   * can opt in so an oversized best evidence hit does not become a false
+   * no-evidence result.
+   */
+  keepFirst?: boolean;
+}
+
 /**
  * Generic greedy top-down budget packer (v1 memory-verbs protocol). Walks
  * the input in order, accumulates per-item costs via the caller-supplied
@@ -72,12 +83,15 @@ export interface TokenBudgetMeta {
  *   - budget undefined / <= 0: returns input unchanged; dropped=0, kept=N.
  *   - First item alone exceeds budget: returns []; dropped=N, kept=0.
  *     (Intentionally strict: the caller asked for a hard cap.)
+ *   - keepFirst=true: first oversized item is retained, but later items still
+ *     obey the top-down stop rule.
  *   - Input empty: returns []; budget unused.
  */
 export function packToBudget<T>(
   items: T[],
   cost: (item: T) => number,
   budget: number | undefined,
+  options: PackToBudgetOptions = {},
 ): { items: T[]; meta: TokenBudgetMeta } {
   const safeBudget = typeof budget === 'number' && budget > 0 ? budget : 0;
 
@@ -97,7 +111,13 @@ export function packToBudget<T>(
   let used = 0;
   for (const it of items) {
     const c = cost(it);
-    if (used + c > safeBudget) break;
+    if (used + c > safeBudget) {
+      if (options.keepFirst === true && kept.length === 0) {
+        kept.push(it);
+        used += c;
+      }
+      break;
+    }
     kept.push(it);
     used += c;
   }
@@ -122,7 +142,8 @@ export function packToBudget<T>(
 export function enforceTokenBudget(
   results: SearchResult[],
   budget: number | undefined,
+  options: PackToBudgetOptions = {},
 ): { results: SearchResult[]; meta: TokenBudgetMeta } {
-  const { items, meta } = packToBudget(results, resultTokens, budget);
+  const { items, meta } = packToBudget(results, resultTokens, budget, options);
   return { results: items, meta };
 }

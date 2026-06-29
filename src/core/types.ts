@@ -934,6 +934,12 @@ export interface SearchOpts {
   include_slug_prefixes?: string[];
   detail?: 'low' | 'medium' | 'high';
   /**
+   * Disable no-hit keyword fallback for latency-critical precision callers.
+   * Broad research search keeps the fallback by default; entity near-miss
+   * suggestions can opt out so absent identifiers stay cheap.
+   */
+  fallback?: boolean;
+  /**
    * v0.20.0 Cathedral II: filter by content_chunks.language (e.g., 'typescript',
    * 'python', 'ruby'). Used by `gbrain query --lang <lang>`. NULL/undefined
    * returns all languages.

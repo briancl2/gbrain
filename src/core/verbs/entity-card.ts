@@ -377,7 +377,7 @@ async function nearMissSuggestions(
   name: string,
 ): Promise<EntitySuggestion[]> {
   try {
-    const raw = await engine.searchKeyword(name, { limit: SUGGESTION_CAP, sourceId });
+    const raw = await engine.searchKeyword(name, { limit: SUGGESTION_CAP, sourceId, fallback: false });
     const results = raw as SearchResult[];
     stampEvidence(results);
     return results.map(r => ({
