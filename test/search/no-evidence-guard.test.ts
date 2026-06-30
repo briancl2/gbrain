@@ -96,6 +96,21 @@ describe('no-evidence admission guard', () => {
     expect(natural).toHaveLength(1);
   });
 
+  test('preserves relational graph evidence for lexically unrecoverable answers', () => {
+    const relational = [result({
+      slug: 'people/hidden-founder',
+      title: 'Hidden Founder',
+      chunk_text: 'No direct lexical overlap with the relationship query.',
+      relational_seed: 'companies/widget-co',
+      relational_via_link_types: ['invested_in'],
+      relational_path: ['companies/widget-co', 'people/hidden-founder'],
+    })];
+
+    const meta = applyNoEvidenceAdmissionGuard(relational, 'who invested in Widget Co');
+    expect(meta.enabled).toBe(false);
+    expect(relational).toHaveLength(1);
+  });
+
   test('anchor extraction keeps distinctive research terms', () => {
     expect(noEvidenceAnchorTokens('What did the Zalthor Meridian trial conclude in 2099?'))
       .toEqual(['zalthor', 'meridian', 'trial', 'conclude', '2099']);

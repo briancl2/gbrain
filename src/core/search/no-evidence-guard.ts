@@ -131,6 +131,13 @@ function isExactKnownSourceMatch(query: string, result: SearchResult): boolean {
 }
 
 function hasKnownSourceEvidence(query: string, result: SearchResult, anchors: string[]): boolean {
+  if (
+    (result.relational_via_link_types?.length ?? 0) > 0
+    || (result.relational_path?.length ?? 0) > 0
+    || typeof result.relational_seed === 'string'
+  ) {
+    return true;
+  }
   if (result.alias_hit === true) return true;
   if (result.evidence === 'alias_hit' || result.evidence === 'exact_title_match') return true;
   if (isExactKnownSourceMatch(query, result)) return true;
