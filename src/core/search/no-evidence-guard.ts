@@ -17,6 +17,16 @@ export interface NoEvidenceGuardMeta {
   kept_results: number;
 }
 
+export interface NoEvidenceSupportTrace {
+  slug: string;
+  anchors: string[];
+  matched_anchors: string[];
+  lexical_support_count: number;
+  required_lexical_support: number;
+  support_ratio: number;
+  supported: boolean;
+}
+
 const FAIL_THRESHOLD = 0;
 
 const STOPWORDS = new Set([
@@ -112,13 +122,8 @@ function resultHaystack(result: SearchResult): string {
   ].filter(Boolean).join(' '));
 }
 
-function lexicalSupportCount(result: SearchResult, anchors: string[]): number {
-  const haystack = resultHaystack(result);
-  let count = 0;
-  for (const token of anchors) {
-    if (haystack.includes(token)) count += 1;
-  }
-  return count;
+function textTokenSet(normalized: string): Set<string> {
+  return new Set(normalized.match(/[a-z0-9]+/g) ?? []);
 }
 
 function isExactKnownSourceMatch(query: string, result: SearchResult): boolean {
@@ -130,7 +135,45 @@ function isExactKnownSourceMatch(query: string, result: SearchResult): boolean {
   return q.length >= 8 && (slug.includes(q) || title.includes(q));
 }
 
-function hasKnownSourceEvidence(query: string, result: SearchResult, anchors: string[]): boolean {
+function requiredLexicalSupport(anchors: string[]): number {
+  if (anchors.length <= 3) return Math.max(1, anchors.length);
+  return Math.max(3, Math.floor(anchors.length / 2) + 1);
+}
+
+function supportTrace(
+  result: SearchResult,
+  anchors: string[],
+): NoEvidenceSupportTrace {
+  const tokens = textTokenSet(resultHaystack(result));
+  const matched = anchors.filter(token => tokens.has(token));
+  const requiredLexical = requiredLexicalSupport(anchors);
+  const supportRatio = anchors.length === 0 ? 0 : matched.length / anchors.length;
+  const supported = matched.length >= requiredLexical;
+
+  return {
+    slug: result.slug,
+    anchors,
+    matched_anchors: matched,
+    lexical_support_count: matched.length,
+    required_lexical_support: requiredLexical,
+    support_ratio: supportRatio,
+    supported,
+  };
+}
+
+export function traceNoEvidenceSupport(
+  results: SearchResult[],
+  query: string,
+): NoEvidenceSupportTrace[] {
+  const anchors = noEvidenceAnchorTokens(query);
+  return results.map(result => supportTrace(result, anchors));
+}
+
+function hasKnownSourceEvidence(
+  query: string,
+  result: SearchResult,
+  anchors: string[],
+): boolean {
   if (
     (result.relational_via_link_types?.length ?? 0) > 0
     || (result.relational_path?.length ?? 0) > 0
@@ -141,8 +184,7 @@ function hasKnownSourceEvidence(query: string, result: SearchResult, anchors: st
   if (result.alias_hit === true) return true;
   if (result.evidence === 'alias_hit' || result.evidence === 'exact_title_match') return true;
   if (isExactKnownSourceMatch(query, result)) return true;
-  const required = anchors.length <= 3 ? Math.max(1, anchors.length) : 2;
-  return lexicalSupportCount(result, anchors) >= required;
+  return supportTrace(result, anchors).supported;
 }
 
 export function applyNoEvidenceAdmissionGuard(
