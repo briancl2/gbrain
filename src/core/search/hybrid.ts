@@ -56,6 +56,7 @@ import {
   loadAuthorityStatusFrontmatter,
   loadCurrentAuthorityCandidates,
 } from './authority-status.ts';
+import { applyNoEvidenceAdmissionGuard } from './no-evidence-guard.ts';
 
 export const RRF_K = 60;
 const COMPILED_TRUTH_BOOST = 2.0;
@@ -1086,6 +1087,7 @@ export async function hybridSearch(
       sourceIds: opts?.sourceIds,
     });
     stampEvidence(noEmbedHopped);
+    applyNoEvidenceAdmissionGuard(noEmbedHopped, query);
     const noEmbedSliced = noEmbedHopped.slice(offset, offset + limit);
     // v0.32.3 search-lite: budget enforcement on the no-embedding-provider path.
     const { results: noEmbedBudgeted, meta: noEmbedBudgetMeta } = enforceTokenBudget(noEmbedSliced, resolvedMode.tokenBudget, { keepFirst: true });
@@ -1318,6 +1320,7 @@ export async function hybridSearch(
       sourceIds: opts?.sourceIds,
     });
     stampEvidence(kwHopped);
+    applyNoEvidenceAdmissionGuard(kwHopped, query);
     const kwSliced = kwHopped.slice(offset, offset + limit);
     // v0.32.3 search-lite: budget enforcement on the keyword-fallback path too.
     const { results: kwBudgeted, meta: kwBudgetMeta } = enforceTokenBudget(kwSliced, resolvedMode.tokenBudget, { keepFirst: true });
@@ -1496,6 +1499,7 @@ export async function hybridSearch(
   // the full alias-hopped set before any adaptive trim so the kept results
   // carry evidence regardless of where the cap lands.
   stampEvidence(aliasHopped);
+  applyNoEvidenceAdmissionGuard(aliasHopped, query);
 
   // v0.42 — intent-aware adaptive return-sizing (opt-in, default off). Trim
   // the ranked candidate set to an intent-driven cap BEFORE the limit slice,
@@ -1740,6 +1744,7 @@ export async function hybridSearchCached(
 
       // Budget enforcement — same pipeline tail as fresh path.
       const { results: budgeted, meta: budgetMeta } = enforceTokenBudget(sliced, opts?.tokenBudget, { keepFirst: true });
+      applyNoEvidenceAdmissionGuard(budgeted, query);
 
       // Emit meta describing the cache path.
       const cachedMeta: HybridSearchMeta = {
