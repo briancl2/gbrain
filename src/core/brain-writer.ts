@@ -479,36 +479,31 @@ export async function scanBrainSources(
     // pool can make this await hang past the budget. Without the race, we'd
     // wait indefinitely AND defeat the wall-clock guarantee.
     let dbPageCount: number | null = null;
+    let dbPageCountDeadlineHit = false;
     if (opts.dbPageCountForSource) {
       try {
         if (opts.deadline) {
           const remainingMs = opts.deadline - Date.now();
           if (remainingMs <= 0) {
+            dbPageCountDeadlineHit = true;
             dbPageCount = null;
           } else {
             // Race COUNT against the deadline so a hung query can't eat the budget.
-            //
-            // Boundary overshoot (+1ms): the post-await deadline check at line
-            // ~512 uses `Date.now() >= deadline`. setTimeout fires AT OR AFTER
-            // the requested delay, so in theory the check always passes. In
-            // practice on heavily-loaded CI runners (8 parallel shards × 4
-            // concurrent test files = ~32 concurrent bun processes) we saw
-            // intermittent failures where the timer callback resolved
-            // microseconds BEFORE the wall-clock boundary, leaving Date.now()
-            // a tick below deadline and the skip-check evaluating false. The
-            // src-a scan then ran on a populated dir before src-b's
-            // between-source check caught up — causing
-            // `firstSource.status === 'skipped'` to receive 'scanned'.
-            //
-            // Adding 1ms guarantees the timer fires past the deadline by at
-            // least one millisecond regardless of runner timer drift. Cost is
-            // 1ms additional wall-clock latency on hung COUNT queries, which
-            // is operationally negligible. Flake repro:
-            // https://github.com/garrytan/gbrain/actions/runs/77611667786
-            dbPageCount = await Promise.race([
-              opts.dbPageCountForSource(src.id),
-              new Promise<null>(resolve => setTimeout(() => resolve(null), remainingMs + 1)),
+            // Do not infer timeout from a post-race Date.now() boundary. CI
+            // timers can resume near the integer-ms edge, so carry the timeout
+            // result explicitly and let it drive the skipped-source path below.
+            const countResult = await Promise.race([
+              opts.dbPageCountForSource(src.id).then(value => ({ kind: 'count' as const, value })),
+              new Promise<{ kind: 'deadline' }>(resolve =>
+                setTimeout(() => resolve({ kind: 'deadline' }), remainingMs),
+              ),
             ]);
+            if (countResult.kind === 'deadline') {
+              dbPageCountDeadlineHit = true;
+              dbPageCount = null;
+            } else {
+              dbPageCount = countResult.value;
+            }
           }
         } else {
           dbPageCount = await opts.dbPageCountForSource(src.id);
@@ -523,11 +518,10 @@ export async function scanBrainSources(
     // status='partial' with files_scanned=0, which is misleading ("partial
     // scan" when actually nothing was scanned). Mark this source + remainder
     // as 'skipped' so the doctor message is honest.
-    // `>=` matches the between-source check above (line 445). The Promise.race
-    // setTimeout resolves null at exactly `remainingMs` from now, so post-await
-    // Date.now() often equals deadline within integer-ms precision — strict `>`
-    // missed those landings on CI and let the next scanOneSource run anyway.
-    if (opts.signal?.aborted || (opts.deadline && Date.now() >= opts.deadline)) {
+    // `>=` matches the between-source check above. dbPageCountDeadlineHit is
+    // load-bearing: when the timeout branch wins the COUNT race, skip this
+    // source even if a coarse Date.now() read lands just before the deadline.
+    if (dbPageCountDeadlineHit || opts.signal?.aborted || (opts.deadline && Date.now() >= opts.deadline)) {
       if (abortedAtSource === null) {
         abortedAtSource = src.id;
       }
