@@ -100,6 +100,15 @@ const CURRENT_QUERY_STOPWORDS = new Set([
   'with',
 ]);
 
+function queryIsBoundaryResearch(query: string): boolean {
+  const q = normalize(query);
+  return /\bnegative boundary\b/.test(q)
+    || /\bnot\b.{0,48}\b(?:closure|route|routing|authority|truth)\b/.test(q)
+    || /\bwithout\b.{0,64}\b(?:making|letting|using|treating)\b.{0,64}\b(?:gbrain|sidecars?|memory)\b.{0,64}\b(?:coordinator|authority|truth)\b/.test(q)
+    || /\broute false positives to owner repos\b/.test(q)
+    || /\bsecond brain research memory\b/.test(q);
+}
+
 function normalize(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();
 }
@@ -143,6 +152,7 @@ export function queryWantsCurrentAuthority(query: string): boolean {
 export function queryNeedsCurrentEvidenceGuard(query: string): boolean {
   const q = normalize(query);
   if (!q) return false;
+  if (queryIsBoundaryResearch(q)) return false;
   return STRICT_CURRENT_EVIDENCE_RE.test(q)
     || (queryWantsCurrentAuthority(q) && CURRENT_EVIDENCE_GUARD_CONTEXT_RE.test(q));
 }

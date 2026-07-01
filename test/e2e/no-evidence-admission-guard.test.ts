@@ -123,4 +123,76 @@ describe('hybridSearch no-evidence admission guard', () => {
     );
     expect(positive[0]?.slug).toBe('research-cases/case-017-portfolio-advisor-signal-and-decision-packets');
   });
+
+  test('Wave 13 natural-question recall keeps supported boundary and synonym matches', async () => {
+    await seedResearchCase(1, 'GBrain second-brain intent correction', [
+      'User corrected the system toward GBrain as private second brain and researcher use case rather than campaign-sync machinery.',
+      'Operator intent: working cross-domain second brain, not proof-only adoption reports.',
+      'GBrain corpus must model research knowledge separately from GitHub work truth and BMA sync state.',
+    ].join(' '));
+    await seedResearchCase(3, 'GBrain current-over-stale repair', [
+      'Repair retrieval so current source-backed owner truth beats stale adjacent records.',
+      'Wave 10 source-backed currentness claims must beat stale unsupported claims.',
+    ].join(' '));
+    await seedResearchCase(7, 'Source-to-action research spine', [
+      'Turn source evidence into owner actions without letting sidecars or GBrain coordinate.',
+      'Skill formalized operator signal to source capsule to actionability to owner action to outcome.',
+      'GBrain records preserve source capsule, claim, actionability cluster, trial spec, and outcome receipt links.',
+    ].join(' '));
+    await seedResearchCase(9, 'Deep Research public-source packets', [
+      'Treat Deep Research as public-source research with source-ledger requirements, not closure truth.',
+      'Deep Research is useful when source-ledger and public URLs exist; not superior by default.',
+    ].join(' '));
+    await seedResearchCase(15, 'Operator intent intelligence', [
+      'Mine raw operator turns to prevent drift and support outcome language.',
+      'Operator-intent skill treats raw turns as primary evidence and clusters repeated corrections.',
+      'Research brain needs user-correction facts and supersession, but operational preferences stay agent memory.',
+    ].join(' '));
+    await seedResearchCase(16, 'Issue #164 campaign sync as negative boundary', [
+      'Separate GitHub work truth/campaign sync from second-brain research memory.',
+      'Recent sync blockers are BMA workflow issues, not the core GBrain research use case.',
+      'Corpus spec must not let GBrain become closure truth or roadmap selector.',
+    ].join(' '));
+    await seedResearchCase(23, 'Transcript health remediation sweep', [
+      'Use repo-star fleet for overall target health and route false positives to owner repos.',
+      'Repo-star artifacts support target health measurement without giving GBrain route or closure authority.',
+    ].join(' '));
+    await seedResearchCase(42, 'No-evidence and conflict handling', [
+      'Prevent plausible adjacent records from being treated as facts.',
+      'Recent GBrain probes and source-attribution docs emphasize conflict/no-evidence behavior.',
+      'Research brain needs explicit unknown, conflict, and fail-closed representation.',
+    ].join(' '));
+
+    const q01 = await hybridSearch(
+      engine,
+      'What is GBrain intended to be in the current product vision, what roles are explicitly out of scope, and how should supported operator-intent corrections supersede stale adjacent records?',
+      { limit: 8, sourceId: 'default' },
+    );
+    expect(q01.map(r => r.slug)).toContain('research-cases/case-001-gbrain-second-brain-intent-correction');
+    expect(q01.map(r => r.slug)).toContain('research-cases/case-015-operator-intent-intelligence');
+
+    const q03 = await hybridSearch(
+      engine,
+      'How should a research source capsule move from evidence to claim cluster to owner action and outcome without making GBrain the coordinator or closure authority?',
+      { limit: 5, sourceId: 'default' },
+    );
+    expect(q03.map(r => r.slug)).toContain('research-cases/case-007-source-to-action-research-spine');
+
+    const q02 = await hybridSearch(
+      engine,
+      'What can be claimed after Wave 10 about current source-backed truth versus stale or unsupported facts, and which unsupported claims must fail closed?',
+      { limit: 8, sourceId: 'default' },
+    );
+    expect(q02.map(r => r.slug)).toContain('research-cases/case-003-gbrain-current-over-stale-repair');
+    expect(q02.map(r => r.slug)).toContain('research-cases/case-042-no-evidence-and-conflict-handling');
+
+    const case009 = await hybridSearch(engine, 'Treat Deep Research as public-source research with source-ledger requirements, not closure truth.', { limit: 5, sourceId: 'default' });
+    expect(case009[0]?.slug).toBe('research-cases/case-009-deep-research-public-source-packets');
+
+    const case016 = await hybridSearch(engine, 'Separate GitHub work truth/campaign sync from second-brain research memory.', { limit: 5, sourceId: 'default' });
+    expect(case016[0]?.slug).toBe('research-cases/case-016-issue-164-campaign-sync-as-negative-boundary');
+
+    const case023 = await hybridSearch(engine, 'Use repo-star fleet for overall target health and route false positives to owner repos.', { limit: 5, sourceId: 'default' });
+    expect(case023[0]?.slug).toBe('research-cases/case-023-transcript-health-remediation-sweep');
+  });
 });

@@ -57,6 +57,16 @@ function hasNegatedAuthorizationIntent(q: string): boolean {
   ]);
 }
 
+function hasNegatedRouteClosureIntent(q: string): boolean {
+  return hasAny(q, [
+    /\bnot\b.{0,64}\b(?:closure|route|routing|authority|truth)\b/,
+    /\bwithout\b.{0,64}\b(?:making|letting|using|treating)\b.{0,64}\b(?:gbrain|sidecars?|memory)\b.{0,64}\b(?:coordinator|authority|truth)\b/,
+    /\b(?:separate|separates|separating)\b.{0,80}\b(?:github|campaign sync|work truth|closure|route|routing)\b.{0,80}\b(?:second brain|research memory|memory)\b/,
+    /\bnegative boundary\b/,
+    /\broute false positives to owner repos\b/,
+  ]);
+}
+
 function uniquePush(out: string[], seen: Set<string>, token: string): void {
   if (!token || STOPWORDS.has(token) || seen.has(token)) return;
   seen.add(token);
@@ -102,8 +112,8 @@ export function classifyHardUnsupportedIntent(query: string): NoEvidenceRiskCate
   const routeClosureAuthority = hasAny(q, [
     /\b(route|routing|closure|closeout|campaign sync|issue body|roadmap|selector)\b/,
     /\b(pr|pull request|check|merge|github truth)\b/,
-  ]) && hasAny(q, [/\b(authority|truth|own|owner|make|treat|declare|control|replace)\b/]);
-  if (routeClosureAuthority) add('route_closure_authority');
+  ]) && hasAny(q, [/\b(authority|truth|own|make|treat|declare|control|replace)\b/]);
+  if (routeClosureAuthority && !hasNegatedRouteClosureIntent(q)) add('route_closure_authority');
 
   const privateSecret = hasAny(q, [
     /\b(raw private|private packet|private brain|secret|token|api key|password|credential|holding packet)\b/,
@@ -124,6 +134,18 @@ export function classifyHardUnsupportedIntent(query: string): NoEvidenceRiskCate
   ]) && hasAny(q, [/\bgbrain\b/]);
   const falsePremiseCurrentness = currentProductionPremise || gbrainAdmissionPremise;
   if (falsePremiseCurrentness) add('false_premise_currentness');
+
+  if (
+    /\bcanary\b/.test(q)
+    && hasAny(q, [
+      /\bno source\b/,
+      /\bshould return no results\b/,
+      /\bnonexistent\b/,
+      /\bout of corpus\b/,
+    ])
+  ) {
+    add('specific_out_of_corpus');
+  }
 
   return categories;
 }
@@ -147,9 +169,38 @@ function addTokenVariant(out: Set<string>, token: string): void {
   if (token.length > 6 && token.endsWith('ing')) out.add(token.slice(0, -3));
 }
 
+function addAnchorSynonyms(out: Set<string>, token: string): void {
+  const variants: Record<string, string[]> = {
+    intended: ['intent', 'purpose'],
+    product: ['use', 'case', 'research', 'second', 'brain'],
+    vision: ['intent', 'purpose', 'use', 'case'],
+    roles: ['role', 'boundary', 'machinery', 'coordinator', 'authority'],
+    scope: ['boundary', 'machinery', 'authority', 'authorized'],
+    supported: ['support', 'source', 'backed', 'evidence'],
+    operator: ['user'],
+    corrections: ['correction', 'corrected', 'supersession'],
+    supersede: ['supersession', 'override', 'replace'],
+    supersedes: ['supersession', 'override', 'replace'],
+    unsupported: ['evidence', 'unknown', 'conflict'],
+    claimed: ['claim', 'claims'],
+    facts: ['records', 'fact'],
+    capsule: ['capsules'],
+    cluster: ['actionability', 'clusters'],
+    coordinator: ['coordinate'],
+  };
+  for (const variant of variants[token] ?? []) addTokenVariant(out, variant);
+}
+
 function textTokenSet(normalized: string): Set<string> {
   const out = new Set<string>();
   for (const token of normalized.match(/[a-z0-9]+/g) ?? []) addTokenVariant(out, token);
+  return out;
+}
+
+function anchorVariantSet(anchor: string): Set<string> {
+  const out = new Set<string>();
+  addTokenVariant(out, anchor);
+  addAnchorSynonyms(out, anchor);
   return out;
 }
 
@@ -172,6 +223,11 @@ function allowsLongNaturalQuestionRelaxation(query: string): boolean {
     /\bredacted\b/,
     /\bnon authorization\b/,
     /\bnon authorized\b/,
+    /\boperator intent\b/,
+    /\bproduct vision\b/,
+    /\bsecond brain\b/,
+    /\bsource capsule\b/,
+    /\bowner action\b/,
   ]);
 }
 
@@ -192,7 +248,12 @@ function supportTrace(
   query: string,
 ): NoEvidenceSupportTrace {
   const tokens = textTokenSet(resultHaystack(result));
-  const matched = anchors.filter(token => tokens.has(token));
+  const matched = anchors.filter(token => {
+    for (const variant of anchorVariantSet(token)) {
+      if (tokens.has(variant)) return true;
+    }
+    return false;
+  });
   const requiredLexical = requiredLexicalSupport(anchors, query);
   const supportRatio = anchors.length === 0 ? 0 : matched.length / anchors.length;
   const supported = matched.length >= requiredLexical;

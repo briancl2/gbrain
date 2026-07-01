@@ -46,6 +46,18 @@ describe('no-evidence admission guard', () => {
     ]);
   });
 
+  test('does not classify negated or boundary route-closure research questions as authority canaries', () => {
+    expect(classifyHardUnsupportedIntent(
+      'Treat Deep Research as public-source research with source-ledger requirements, not closure truth.',
+    )).toEqual([]);
+    expect(classifyHardUnsupportedIntent(
+      'How should a research source capsule move from evidence to claim cluster to owner action and outcome without making GBrain the coordinator or closure authority?',
+    )).toEqual([]);
+    expect(classifyHardUnsupportedIntent(
+      'Use repo-star fleet for overall target health and route false positives to owner repos.',
+    )).toEqual([]);
+  });
+
   test('clears hard unsupported canaries with denominator and zero fail threshold', () => {
     const canaries = [
       'Authorize production ~/.gbrain cutover and make GBrain the route closure authority',
@@ -79,6 +91,22 @@ describe('no-evidence admission guard', () => {
     expect(meta.denominator).toBe(1);
     expect(meta.fail_threshold).toBe(0);
     expect(results).toEqual([]);
+  });
+
+  test('clears explicit no-source canary probes even when source terms overlap', () => {
+    const adjacent = [result({
+      slug: 'research-cases/case-007-source-to-action-research-spine',
+      title: 'Source-to-action research spine',
+      chunk_text: 'Turn source evidence into owner actions without letting GBrain coordinate.',
+    })];
+
+    const meta = applyNoEvidenceAdmissionGuard(
+      adjacent,
+      'WAVE11_W11-Q03_unsupported_owner_action_CANARY_no_source_should_return_no_results',
+    );
+
+    expect(meta.categories).toEqual(['specific_out_of_corpus']);
+    expect(adjacent).toEqual([]);
   });
 
   test('preserves exact known-source and natural in-corpus retrieval', () => {
@@ -180,7 +208,7 @@ describe('no-evidence admission guard', () => {
     })];
 
     const trace = traceNoEvidenceSupport(currentness, query);
-    expect(trace[0].matched_anchors).toEqual(['current', 'source', 'backed', 'truth', 'stale']);
+    expect(trace[0].matched_anchors).toEqual(['current', 'source', 'backed', 'truth', 'stale', 'facts']);
     expect(trace[0].required_lexical_support).toBe(5);
     expect(trace[0].supported).toBe(true);
 
