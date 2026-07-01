@@ -76,6 +76,9 @@ const CURRENT_INTENT_RE =
 const STRICT_CURRENT_EVIDENCE_RE =
   /\b(active child|active track|next active|campaign sync|closeout|final verdict|worker return|which\b.+\bpr\b.+\bfixed|cycle[_-\s]?freshness|repaired[_-\s]?briancl2[_-\s]?master|sync[._-\s]?repo[._-\s]?path)\b/i;
 
+const CURRENT_EVIDENCE_GUARD_CONTEXT_RE =
+  /\b(issue\s*#?\d+|#\d+|pull\s+request|pr\s*#?\d+|active child|active track|next active|campaign sync|closeout|owner[-_\s]?truth|owner action|route closure|closure truth|github truth)\b/i;
+
 const CURRENT_QUERY_STOPWORDS = new Set([
   'active',
   'canonical',
@@ -140,7 +143,8 @@ export function queryWantsCurrentAuthority(query: string): boolean {
 export function queryNeedsCurrentEvidenceGuard(query: string): boolean {
   const q = normalize(query);
   if (!q) return false;
-  return queryWantsCurrentAuthority(q) || STRICT_CURRENT_EVIDENCE_RE.test(q);
+  return STRICT_CURRENT_EVIDENCE_RE.test(q)
+    || (queryWantsCurrentAuthority(q) && CURRENT_EVIDENCE_GUARD_CONTEXT_RE.test(q));
 }
 
 export function authorityQueryTokens(query: string): string[] {

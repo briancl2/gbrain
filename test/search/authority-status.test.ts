@@ -69,6 +69,12 @@ describe('authority-status query gating', () => {
     expect(queryNeedsCurrentEvidenceGuard('current-over-stale is a native GBrain adoption blocker')).toBe(false);
   });
 
+  test('source-backed currentness research questions do not enable strict owner-surface clearing', () => {
+    const query = 'What can be claimed after Wave 10 about current source-backed truth versus stale or unsupported facts?';
+    expect(queryWantsCurrentAuthority(query)).toBe(true);
+    expect(queryNeedsCurrentEvidenceGuard(query)).toBe(false);
+  });
+
   test('query tokens keep domain anchors but drop current-intent words', () => {
     expect(authorityQueryTokens('Issue 164 next active track GBrain')).toEqual(['issue', '164', 'gbrain']);
   });

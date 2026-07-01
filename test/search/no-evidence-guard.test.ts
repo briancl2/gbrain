@@ -171,6 +171,63 @@ describe('no-evidence admission guard', () => {
     expect(adjacent).toHaveLength(1);
   });
 
+  test('long natural currentness questions can preserve ranked source-backed matches', () => {
+    const query = 'What can be claimed after Wave 10 about current source-backed truth versus stale or unsupported facts, and which unsupported claims must fail closed?';
+    const currentness = [result({
+      slug: 'research-cases/case-003-gbrain-current-over-stale-repair',
+      title: 'GBrain current-over-stale repair',
+      chunk_text: 'Operator research question: Repair retrieval so current source-backed owner truth beats stale adjacent records.',
+    })];
+
+    const trace = traceNoEvidenceSupport(currentness, query);
+    expect(trace[0].matched_anchors).toEqual(['current', 'source', 'backed', 'truth', 'stale']);
+    expect(trace[0].required_lexical_support).toBe(5);
+    expect(trace[0].supported).toBe(true);
+
+    const meta = applyNoEvidenceAdmissionGuard(currentness, query);
+    expect(meta.enabled).toBe(false);
+    expect(currentness).toHaveLength(1);
+  });
+
+  test('GBrain currentness alias-title queries are not false-premise canaries', () => {
+    const query = 'Currentness and no-evidence stress GBrain current-over-stale repair No-evidence and conflict handling';
+    expect(classifyHardUnsupportedIntent(query)).toEqual([]);
+
+    const hits = [
+      result({
+        slug: 'research-cases/case-003-gbrain-current-over-stale-repair',
+        title: 'GBrain current-over-stale repair',
+        chunk_text: 'GBrain current-over-stale repair uses current source-backed owner truth and records no-evidence semantics.',
+      }),
+      result({
+        slug: 'research-cases/case-042-no-evidence-and-conflict-handling',
+        title: 'No-evidence and conflict handling',
+        chunk_text: 'No-evidence and conflict handling requires explicit unknown/conflict/fail-closed representation.',
+      }),
+    ];
+
+    const meta = applyNoEvidenceAdmissionGuard(hits, query);
+    expect(meta.enabled).toBe(false);
+    expect(hits.map(hit => hit.slug)).toEqual([
+      'research-cases/case-003-gbrain-current-over-stale-repair',
+      'research-cases/case-042-no-evidence-and-conflict-handling',
+    ]);
+  });
+
+  test('negated portfolio trade-authority questions are not hard authorization canaries', () => {
+    const query = 'What may portfolio research packets preserve for second-brain reuse, what must be redacted, and what decision or trade authority must remain explicitly non-authorized?';
+    expect(classifyHardUnsupportedIntent(query)).toEqual([]);
+
+    const packets = [result({
+      slug: 'research-cases/case-017-portfolio-advisor-signal-and-decision-packets',
+      title: 'Portfolio advisor signal and decision packets',
+      chunk_text: 'Use portfolio research artifacts safely without leaking holdings or authorizing trades. Research corpus needs privacy class, redaction status, non-authorization, and decision-readiness gates.',
+    })];
+    const meta = applyNoEvidenceAdmissionGuard(packets, query);
+    expect(meta.enabled).toBe(false);
+    expect(packets).toHaveLength(1);
+  });
+
   test('proportional token support rejects plausible absent predicates', () => {
     const query = 'Portfolio advisor Hamilton migration policy';
     const adjacent = [result({
