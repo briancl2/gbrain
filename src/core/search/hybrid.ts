@@ -57,6 +57,7 @@ import {
   loadCurrentAuthorityCandidates,
 } from './authority-status.ts';
 import { applyNoEvidenceAdmissionGuard } from './no-evidence-guard.ts';
+import { buildKeywordFallbackPlan } from './keyword-fallback.ts';
 
 export const RRF_K = 60;
 const COMPILED_TRUTH_BOOST = 2.0;
@@ -162,6 +163,25 @@ registerBackgroundWorkDrainer({
  */
 const BACKLINK_BOOST_COEF = 0.05;
 const DEBUG = process.env.GBRAIN_SEARCH_DEBUG === '1';
+const WEAK_KEYWORD_RECALL_FLOOR = 0.30;
+
+function shouldRunExpandedKeywordRecall(results: SearchResult[], query: string): boolean {
+  const plan = buildKeywordFallbackPlan(query);
+  if (!plan?.expanded) return false;
+  const top = results[0]?.score;
+  return results.length === 0 || !Number.isFinite(top) || (top as number) < WEAK_KEYWORD_RECALL_FLOOR;
+}
+
+function mergeKeywordRecallResults(primary: SearchResult[], expanded: SearchResult[]): SearchResult[] {
+  if (expanded.length === 0) return primary;
+  const byPage = new Map<string, SearchResult>();
+  for (const result of [...primary, ...expanded]) {
+    const key = `${result.source_id ?? 'default'}\0${result.slug}`;
+    const prior = byPage.get(key);
+    if (!prior || result.score > prior.score) byPage.set(key, result);
+  }
+  return [...byPage.values()].sort((a, b) => b.score - a.score);
+}
 
 /**
  * Apply backlink boost to a result list in place. Mutates each result's score
@@ -984,8 +1004,18 @@ export async function hybridSearch(
   const earlyModality = (opts?.crossModal && opts.crossModal !== 'auto')
     ? opts.crossModal
     : (suggestions.suggestedModality ?? 'text');
-  const keywordResults: SearchResult[] =
+  let keywordResults: SearchResult[] =
     earlyModality === 'image' ? [] : await engine.searchKeyword(query, searchOpts);
+  const expandedKeywordPlan = shouldRunExpandedKeywordRecall(keywordResults, query)
+    ? buildKeywordFallbackPlan(query)
+    : null;
+  if (expandedKeywordPlan?.expanded && earlyModality !== 'image') {
+    const expandedKeywordResults = await engine.searchKeyword(expandedKeywordPlan.websearchQuery, {
+      ...searchOpts,
+      fallback: false,
+    });
+    keywordResults = mergeKeywordRecallResults(keywordResults, expandedKeywordResults);
+  }
 
   // v0.29.1: resolve salience/recency from caller (back-compat aliases for
   // PR #618's `recencyBoost` numeric scale) or fall back to the heuristic.

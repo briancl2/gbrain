@@ -75,6 +75,13 @@ describe('authority-status query gating', () => {
     expect(queryNeedsCurrentEvidenceGuard(query)).toBe(false);
   });
 
+  test('boundary research queries do not enable strict current-owner clearing', () => {
+    expect(queryNeedsCurrentEvidenceGuard('Issue #164 campaign sync as negative boundary')).toBe(false);
+    expect(queryNeedsCurrentEvidenceGuard('Treat Deep Research as public-source research with source-ledger requirements, not closure truth.')).toBe(false);
+    expect(queryNeedsCurrentEvidenceGuard('How should a source capsule move without making GBrain the coordinator or closure authority?')).toBe(false);
+    expect(queryNeedsCurrentEvidenceGuard('Use repo-star fleet to route false positives to owner repos.')).toBe(false);
+  });
+
   test('query tokens keep domain anchors but drop current-intent words', () => {
     expect(authorityQueryTokens('Issue 164 next active track GBrain')).toEqual(['issue', '164', 'gbrain']);
   });
