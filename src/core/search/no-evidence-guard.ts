@@ -60,6 +60,10 @@ export function noEvidenceAnchorTokens(query: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const token of normalized.match(/[a-z0-9]+/g) ?? []) {
+    // Standalone one-digit tokens are too generic to prove source support.
+    // Wave 10 out-of-corpus canaries carry a trailing probe index
+    // (`..._decision_2`); corpus pages can mention unrelated "2" values.
+    if (/^\d$/.test(token)) continue;
     if (token.length < 4 && !/\d/.test(token)) continue;
     uniquePush(out, seen, token);
   }

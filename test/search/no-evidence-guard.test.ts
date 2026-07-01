@@ -117,6 +117,11 @@ describe('no-evidence admission guard', () => {
       .toEqual(['zalthor', 'meridian', 'trial', 'conclude', '2099']);
   });
 
+  test('anchor extraction ignores one-digit probe suffixes without dropping identifiers', () => {
+    expect(noEvidenceAnchorTokens('WAVE10_OUT_OF_CORPUS_CANARY_case_999_nonexistent_research_decision_2'))
+      .toEqual(['wave10', 'corpus', 'canary', 'case', '999', 'nonexistent', 'research', 'decision']);
+  });
+
   test('trace gate rejects source-generic overlap from Wave 10 corpus canary', () => {
     const query = 'WAVE10_OUT_OF_CORPUS_CANARY_case_999_nonexistent_research_decision_1';
     const adjacent = [result({
