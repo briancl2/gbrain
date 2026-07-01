@@ -4,6 +4,7 @@ import {
   applyNoEvidenceAdmissionGuard,
   classifyHardUnsupportedIntent,
   noEvidenceAnchorTokens,
+  traceNoEvidenceSupport,
 } from '../../src/core/search/no-evidence-guard.ts';
 
 function result(overrides: Partial<SearchResult> = {}): SearchResult {
@@ -114,5 +115,72 @@ describe('no-evidence admission guard', () => {
   test('anchor extraction keeps distinctive research terms', () => {
     expect(noEvidenceAnchorTokens('What did the Zalthor Meridian trial conclude in 2099?'))
       .toEqual(['zalthor', 'meridian', 'trial', 'conclude', '2099']);
+  });
+
+  test('trace gate rejects source-generic overlap from Wave 10 corpus canary', () => {
+    const query = 'WAVE10_OUT_OF_CORPUS_CANARY_case_999_nonexistent_research_decision_1';
+    const adjacent = [result({
+      slug: 'research-cases/case-017-portfolio-advisor-signal-and-decision-packets',
+      title: 'Portfolio advisor signal and decision packets',
+      chunk_text: 'Case CASE-017 represents product research. The decision packet preserves source refs.',
+    })];
+
+    const trace = traceNoEvidenceSupport(adjacent, query);
+    expect(trace[0].matched_anchors).toEqual(['case', 'research', 'decision']);
+    expect(trace[0].required_lexical_support).toBe(5);
+    expect(trace[0].supported).toBe(false);
+
+    const meta = applyNoEvidenceAdmissionGuard(adjacent, query);
+    expect(meta.categories).toEqual(['specific_out_of_corpus']);
+    expect(adjacent).toEqual([]);
+  });
+
+  test('trace gate rejects terse high-overlap absent predicates', () => {
+    const query = 'research case decision Hamilton migration policy';
+    const adjacent = [result({
+      slug: 'research-cases/case-017-portfolio-advisor-signal-and-decision-packets',
+      title: 'Portfolio advisor signal and decision packets',
+      chunk_text: 'Case CASE-017 represents product research. The decision packet preserves source refs.',
+    })];
+
+    const trace = traceNoEvidenceSupport(adjacent, query);
+    expect(trace[0].matched_anchors).toEqual(['research', 'case', 'decision']);
+    expect(trace[0].required_lexical_support).toBe(4);
+    expect(trace[0].supported).toBe(false);
+
+    const meta = applyNoEvidenceAdmissionGuard(adjacent, query);
+    expect(meta.categories).toEqual(['specific_out_of_corpus']);
+    expect(adjacent).toEqual([]);
+  });
+
+  test('proportional token support preserves positive corpus queries', () => {
+    const query = 'Portfolio advisor signal and decision packets';
+    const adjacent = [result({
+      slug: 'research-cases/case-017-portfolio-advisor-signal-and-decision-packets',
+      title: 'Portfolio advisor signal and decision packets',
+      chunk_text: 'Case CASE-017 covers portfolio advisor signal and decision packets.',
+    })];
+
+    const meta = applyNoEvidenceAdmissionGuard(adjacent, query);
+    expect(meta.enabled).toBe(false);
+    expect(adjacent).toHaveLength(1);
+  });
+
+  test('proportional token support rejects plausible absent predicates', () => {
+    const query = 'Portfolio advisor Hamilton migration policy';
+    const adjacent = [result({
+      slug: 'research-cases/case-017-portfolio-advisor-signal-and-decision-packets',
+      title: 'Portfolio advisor signal and decision packets',
+      chunk_text: 'Case CASE-017 covers portfolio advisor signal and decision packets.',
+    })];
+
+    const trace = traceNoEvidenceSupport(adjacent, query);
+    expect(trace[0].matched_anchors).toEqual(['portfolio', 'advisor']);
+    expect(trace[0].required_lexical_support).toBe(3);
+    expect(trace[0].supported).toBe(false);
+
+    const meta = applyNoEvidenceAdmissionGuard(adjacent, query);
+    expect(meta.categories).toEqual(['specific_out_of_corpus']);
+    expect(adjacent).toEqual([]);
   });
 });
