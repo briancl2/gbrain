@@ -49,6 +49,14 @@ function hasAny(q: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(q));
 }
 
+function hasNegatedAuthorizationIntent(q: string): boolean {
+  return hasAny(q, [
+    /\b(?:no|not|never|non)\s+(?:authorized|authorization|authorizing|authorize|trade|trades|trading)\b/,
+    /\b(?:without|avoid|prevents?|forbid(?:s|ding)?|prohibit(?:s|ed|ing)?|redact(?:s|ed|ion)?)\b.{0,48}\b(?:trade|trades|trading|authorization|authorize|authorized)\b/,
+    /\b(?:proposal only|proposal-only|non authorization|non authorized|non authorizing|no trades authorized)\b/,
+  ]);
+}
+
 function uniquePush(out: string[], seen: Set<string>, token: string): void {
   if (!token || STOPWORDS.has(token) || seen.has(token)) return;
   seen.add(token);
@@ -106,11 +114,15 @@ export function classifyHardUnsupportedIntent(query: string): NoEvidenceRiskCate
   const financialTrade = hasAny(q, [
     /\b(portfolio|holdings?|financial|trade|trading|buy|sell|rebalance)\b/,
   ]) && hasAny(q, [/\b(authorize|authorization|execute|place|recommend|approve|trade|buy|sell)\b/]);
-  if (financialTrade) add('financial_trade_authorization');
+  if (financialTrade && !hasNegatedAuthorizationIntent(q)) add('financial_trade_authorization');
 
-  const falsePremiseCurrentness = hasAny(q, [
-    /\b(completed|accepted|admitted|approved|current|latest|now ready|production ready)\b/,
-  ]) && hasAny(q, [/\b(production|default|default on|route closure|closure authority|gbrain)\b/]);
+  const currentProductionPremise = hasAny(q, [
+    /\b(current|latest|now ready|production ready|completed|accepted|admitted|approved)\b/,
+  ]) && hasAny(q, [/\b(production|default|default on|route closure|closure authority)\b/]);
+  const gbrainAdmissionPremise = hasAny(q, [
+    /\b(completed|accepted|admitted|approved|now ready|production ready)\b/,
+  ]) && hasAny(q, [/\bgbrain\b/]);
+  const falsePremiseCurrentness = currentProductionPremise || gbrainAdmissionPremise;
   if (falsePremiseCurrentness) add('false_premise_currentness');
 
   return categories;
@@ -126,8 +138,19 @@ function resultHaystack(result: SearchResult): string {
   ].filter(Boolean).join(' '));
 }
 
+function addTokenVariant(out: Set<string>, token: string): void {
+  if (!token) return;
+  out.add(token);
+  if (token.length > 4 && token.endsWith('ies')) out.add(`${token.slice(0, -3)}y`);
+  if (token.length > 4 && token.endsWith('s')) out.add(token.slice(0, -1));
+  if (token.length > 5 && token.endsWith('ed')) out.add(token.slice(0, -2));
+  if (token.length > 6 && token.endsWith('ing')) out.add(token.slice(0, -3));
+}
+
 function textTokenSet(normalized: string): Set<string> {
-  return new Set(normalized.match(/[a-z0-9]+/g) ?? []);
+  const out = new Set<string>();
+  for (const token of normalized.match(/[a-z0-9]+/g) ?? []) addTokenVariant(out, token);
+  return out;
 }
 
 function isExactKnownSourceMatch(query: string, result: SearchResult): boolean {
@@ -139,18 +162,38 @@ function isExactKnownSourceMatch(query: string, result: SearchResult): boolean {
   return q.length >= 8 && (slug.includes(q) || title.includes(q));
 }
 
-function requiredLexicalSupport(anchors: string[]): number {
+function allowsLongNaturalQuestionRelaxation(query: string): boolean {
+  const q = normalizeText(query);
+  return hasAny(q, [
+    /\bsource backed\b/,
+    /\bno evidence\b/,
+    /\bconflict\b/,
+    /\bfail closed\b/,
+    /\bredacted\b/,
+    /\bnon authorization\b/,
+    /\bnon authorized\b/,
+  ]);
+}
+
+function requiredLexicalSupport(anchors: string[], query: string): number {
   if (anchors.length <= 3) return Math.max(1, anchors.length);
+  // Long natural-language questions mix target-bearing tokens with verbs,
+  // safety adjectives, and connective tissue. Requiring >5 distinct anchors
+  // from one ranked source page over-clears real in-corpus answerability for
+  // safety/currentness questions, while generic long questions keep the
+  // stricter fail-closed threshold.
+  if (anchors.length >= 10 && allowsLongNaturalQuestionRelaxation(query)) return 5;
   return Math.max(3, Math.floor(anchors.length / 2) + 1);
 }
 
 function supportTrace(
   result: SearchResult,
   anchors: string[],
+  query: string,
 ): NoEvidenceSupportTrace {
   const tokens = textTokenSet(resultHaystack(result));
   const matched = anchors.filter(token => tokens.has(token));
-  const requiredLexical = requiredLexicalSupport(anchors);
+  const requiredLexical = requiredLexicalSupport(anchors, query);
   const supportRatio = anchors.length === 0 ? 0 : matched.length / anchors.length;
   const supported = matched.length >= requiredLexical;
 
@@ -170,7 +213,7 @@ export function traceNoEvidenceSupport(
   query: string,
 ): NoEvidenceSupportTrace[] {
   const anchors = noEvidenceAnchorTokens(query);
-  return results.map(result => supportTrace(result, anchors));
+  return results.map(result => supportTrace(result, anchors, query));
 }
 
 function hasKnownSourceEvidence(
@@ -188,7 +231,7 @@ function hasKnownSourceEvidence(
   if (result.alias_hit === true) return true;
   if (result.evidence === 'alias_hit' || result.evidence === 'exact_title_match') return true;
   if (isExactKnownSourceMatch(query, result)) return true;
-  return supportTrace(result, anchors).supported;
+  return supportTrace(result, anchors, query).supported;
 }
 
 export function applyNoEvidenceAdmissionGuard(
