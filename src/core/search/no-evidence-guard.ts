@@ -67,6 +67,13 @@ function hasNegatedRouteClosureIntent(q: string): boolean {
   ]);
 }
 
+function hasRouteClosureBoundaryInquiry(q: string): boolean {
+  return hasAny(q, [
+    /\b(?:does|do|did|can|could|should|would|whether)\b.{0,80}\bgbrain\b.{0,80}\b(?:replace|serve as|act as|become|control|own)\b.{0,120}\b(?:github|campaign|closure|authority|truth|issue body|pr|pull request|check|merge)\b/,
+    /\b(?:does|do|did|can|could|should|would|whether)\b.{0,120}\b(?:github|campaign|closure|authority|truth|issue body|pr|pull request|check|merge)\b.{0,80}\b(?:replace|replaced by|controlled by|owned by)\b.{0,80}\bgbrain\b/,
+  ]);
+}
+
 function uniquePush(out: string[], seen: Set<string>, token: string): void {
   if (!token || STOPWORDS.has(token) || seen.has(token)) return;
   seen.add(token);
@@ -113,7 +120,13 @@ export function classifyHardUnsupportedIntent(query: string): NoEvidenceRiskCate
     /\b(route|routing|closure|closeout|campaign sync|issue body|roadmap|selector)\b/,
     /\b(pr|pull request|check|merge|github truth)\b/,
   ]) && hasAny(q, [/\b(authority|truth|own|make|treat|declare|control|replace)\b/]);
-  if (routeClosureAuthority && !hasNegatedRouteClosureIntent(q)) add('route_closure_authority');
+  if (
+    routeClosureAuthority
+    && !hasNegatedRouteClosureIntent(q)
+    && !hasRouteClosureBoundaryInquiry(q)
+  ) {
+    add('route_closure_authority');
+  }
 
   const privateSecret = hasAny(q, [
     /\b(raw private|private packet|private brain|secret|token|api key|password|credential|holding packet)\b/,

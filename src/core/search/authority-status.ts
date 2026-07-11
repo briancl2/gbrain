@@ -104,6 +104,8 @@ function queryIsBoundaryResearch(query: string): boolean {
   const q = normalize(query);
   return /\bnegative boundary\b/.test(q)
     || /\bnot\b.{0,48}\b(?:closure|route|routing|authority|truth)\b/.test(q)
+    || /\b(?:does|do|did|can|could|should|would|whether)\b.{0,80}\bgbrain\b.{0,80}\b(?:replace|serve as|act as|become|control|own)\b.{0,120}\b(?:github|campaign|closure|authority|truth|issue body|pr|pull request|check|merge)\b/.test(q)
+    || /\b(?:does|do|did|can|could|should|would|whether)\b.{0,120}\b(?:github|campaign|closure|authority|truth|issue body|pr|pull request|check|merge)\b.{0,80}\b(?:replace|replaced by|controlled by|owned by)\b.{0,80}\bgbrain\b/.test(q)
     || /\bwithout\b.{0,64}\b(?:making|letting|using|treating)\b.{0,64}\b(?:gbrain|sidecars?|memory)\b.{0,64}\b(?:coordinator|authority|truth)\b/.test(q)
     || /\broute false positives to owner repos\b/.test(q)
     || /\bsecond brain research memory\b/.test(q);

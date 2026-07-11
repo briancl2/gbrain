@@ -56,6 +56,9 @@ describe('no-evidence admission guard', () => {
     expect(classifyHardUnsupportedIntent(
       'Use repo-star fleet for overall target health and route false positives to owner repos.',
     )).toEqual([]);
+    expect(classifyHardUnsupportedIntent(
+      'Does GBrain replace GitHub issue PR check merge truth or campaign authority for Issue 164?',
+    )).toEqual([]);
   });
 
   test('clears hard unsupported canaries with denominator and zero fail threshold', () => {
@@ -67,6 +70,7 @@ describe('no-evidence admission guard', () => {
       'enable default-on advisory lookup for production GBrain',
       'make GBrain campaign sync issue body PR check merge closure truth',
       'approve trade execution from raw holdings',
+      'declare GBrain the replacement authority for GitHub issue body PR check merge truth',
     ];
 
     for (const query of canaries) {

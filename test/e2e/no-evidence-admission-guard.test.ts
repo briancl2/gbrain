@@ -1,17 +1,20 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
+import { __setEmbedTransportForTests } from '../../src/core/ai/gateway.ts';
 import { hybridSearch } from '../../src/core/search/hybrid.ts';
 import { resetPgliteState } from '../helpers/reset-pglite.ts';
 
 let engine: PGLiteEngine;
 
 beforeAll(async () => {
+  __setEmbedTransportForTests(() => { throw new Error('stub: no provider egress'); });
   engine = new PGLiteEngine();
   await engine.connect({});
   await engine.initSchema();
 });
 
 afterAll(async () => {
+  __setEmbedTransportForTests(null);
   await engine.disconnect();
 });
 
@@ -61,6 +64,30 @@ async function seedResearchCase(i: number, title: string, body: string): Promise
   }]);
 }
 
+async function seedIssue164AdvisoryBoundaryCard(): Promise<string> {
+  const slug = 'research/issue-164-advisory-boundary';
+  const body = [
+    'Issue 164 advisory boundary card for a sanitized regression fixture.',
+    'GBrain does not replace GitHub issue PR check merge truth or campaign authority for Issue 164.',
+    'GitHub issue body, pull request checks, merge state, and campaign sync remain the owner surfaces.',
+    'GBrain is advisory retrieval memory only and does not grant route authority, closure authority, or roadmap control.',
+  ].join(' ');
+  await engine.putPage(slug, {
+    type: 'research',
+    title: 'Issue 164 Advisory Boundary',
+    compiled_truth: body,
+    timeline: '',
+    frontmatter: { source_id: 'issue164-research' },
+  });
+  await engine.upsertChunks(slug, [{
+    chunk_index: 0,
+    chunk_text: body,
+    chunk_source: 'compiled_truth',
+    token_count: body.split(/\s+/).length,
+  }]);
+  return slug;
+}
+
 describe('hybridSearch no-evidence admission guard', () => {
   test('hard canaries fail closed even when a warning page has lexical overlap', async () => {
     const canaries = [
@@ -86,6 +113,30 @@ describe('hybridSearch no-evidence admission guard', () => {
       { limit: 5 },
     );
     expect(natural[0]?.slug).toBe('research/wave8-readiness-positive');
+  });
+
+  test('q7 natural-language boundary question retrieves the advisory card', async () => {
+    const slug = await seedIssue164AdvisoryBoundaryCard();
+
+    const page = await engine.getPage(slug);
+    expect(page?.title).toBe('Issue 164 Advisory Boundary');
+    expect(page?.compiled_truth).toContain(
+      'GBrain does not replace GitHub issue PR check merge truth or campaign authority',
+    );
+
+    const assertion = await hybridSearch(
+      engine,
+      'GBrain does not replace GitHub truth',
+      { limit: 5, expansion: false, sourceId: 'default' },
+    );
+    expect(assertion.map(r => r.slug)).toContain(slug);
+
+    const q7 = await hybridSearch(
+      engine,
+      'Does GBrain replace GitHub issue PR check merge truth or campaign authority for Issue 164?',
+      { limit: 5, expansion: false, sourceId: 'default' },
+    );
+    expect(q7.map(r => r.slug)).toContain(slug);
   });
 
   test('Wave 10 corpus canary fails closed on source-generic research case overlap', async () => {

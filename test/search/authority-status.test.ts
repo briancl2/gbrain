@@ -80,6 +80,7 @@ describe('authority-status query gating', () => {
     expect(queryNeedsCurrentEvidenceGuard('Treat Deep Research as public-source research with source-ledger requirements, not closure truth.')).toBe(false);
     expect(queryNeedsCurrentEvidenceGuard('How should a source capsule move without making GBrain the coordinator or closure authority?')).toBe(false);
     expect(queryNeedsCurrentEvidenceGuard('Use repo-star fleet to route false positives to owner repos.')).toBe(false);
+    expect(queryNeedsCurrentEvidenceGuard('Does GBrain replace GitHub issue PR check merge truth or campaign authority for Issue 164?')).toBe(false);
   });
 
   test('query tokens keep domain anchors but drop current-intent words', () => {
